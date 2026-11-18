@@ -15,9 +15,11 @@ android {
         targetSdk = 35
         // versionCode — номер сборки GitHub Actions (для Android), versionName — 0.1.x из version.properties
         val build = System.getenv("BUILD_NUMBER")?.toIntOrNull() ?: 1
-        val v = java.util.Properties().apply { rootProject.file("version.properties").inputStream().use { load(it) } }
+        val v = rootProject.file("version.properties").readLines()
+            .filter { '=' in it && !it.trimStart().startsWith("#") }
+            .associate { it.substringBefore('=').trim() to it.substringAfter('=').trim() }
         versionCode = build
-        versionName = "${v.getProperty("major")}.${v.getProperty("minor")}.${build - v.getProperty("patchOffset").toInt()}"
+        versionName = "${v["major"]}.${v["minor"]}.${build - (v["patchOffset"]?.toInt() ?: 0)}"
     }
 
     buildFeatures { buildConfig = true }
