@@ -1006,7 +1006,10 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
 
     /** Свернуть: сначала вернуть портретную ориентацию. */
     fun prepareCollapse() {
-        if (isLandscape) setLandscape(false)
+        if (isLandscape) {
+            setLandscape(false) // портрет держится, пока телефон не повернут вертикально
+            return
+        }
         if (forced != null || act.requestedOrientation != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) {
             forced = null
             orientationListener.disable()

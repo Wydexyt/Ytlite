@@ -17,8 +17,6 @@ English · [Русский](README.md)
 
 YT Lite is an unofficial YouTube client for Android with account sign-in: home, subscriptions, history, search, channels, comments, likes and subscribing all work as usual. The main difference from the official app is that it's built to use as little battery and data as possible.
 
-> The app interface is in Russian.
-
 **How it differs from the official app**
 - **Only audio plays in the background.** As soon as the player screen is closed, video stops being downloaded and decoded. The "audio only" button enables this mode even with the screen open — handy for podcasts and music.
 - **The modem isn't kept busy.** Audio is buffered several minutes ahead, then the modem goes to sleep instead of holding the connection open.
@@ -26,11 +24,14 @@ YT Lite is an unofficial YouTube client for Android with account sign-in: home, 
 - **Skips creators' sponsor segments** via [SponsorBlock](https://sponsor.ajay.app).
 - **Nothing runs in the background** while you're not watching: no background syncs, prefetching or notifications.
 - **Clean feeds:** no Shorts, live streams or premieres.
+- **Statistics** — how much you watched, how much in the background and how much data was saved.
 - **Small app** — about 3 MB versus well over a hundred for the official one.
+
+The interface is available in English and Russian.
 
 **What's missing**
 - Shorts, live streams, video downloads, playlists and Watch Later (for now).
-- Russian-only interface.
+- Age-restricted videos open in YouTube's web player as a fallback (no background playback).
 
 ## How it saves battery
 

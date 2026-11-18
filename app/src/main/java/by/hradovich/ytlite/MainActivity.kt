@@ -340,8 +340,10 @@ class MainActivity : Activity() {
     fun expandPlayer() {
         if (player.expanded && panel.translationY == 0f) return
         hideKeyboard()
-        panel.visibility = View.VISIBLE
+        // сначала снять обработчик конца сворачивания, иначе отмена анимации спрячет панель
+        panel.animate().setListener(null)
         panel.animate().cancel()
+        panel.visibility = View.VISIBLE
         if (!player.expanded) panel.translationY = (panel.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels).toFloat()
         player.setExpanded(true)
         updateVideoTrack()
@@ -353,6 +355,7 @@ class MainActivity : Activity() {
     fun collapsePlayer() {
         if (!player.expanded) return
         player.prepareCollapse()
+        panel.animate().setListener(null)
         panel.animate().cancel()
         panel.animate().translationY(panel.height.toFloat()).setDuration(220).setInterpolator(DecelerateInterpolator(1.5f))
             .setListener(object : AnimatorListenerAdapter() {
