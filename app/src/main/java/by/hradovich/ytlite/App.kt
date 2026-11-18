@@ -37,6 +37,20 @@ object Prefs {
     var quality: Int
         get() = p.getInt("quality", 1080)
         set(v) = p.edit().putInt("quality", v).apply()
+
+    /** История поисковых запросов, новые сверху. */
+    val history: List<String>
+        get() = runCatching {
+            val a = org.json.JSONArray(p.getString("history", "[]"))
+            (0 until a.length()).map { a.getString(it) }
+        }.getOrDefault(emptyList())
+
+    fun addHistory(q: String) = saveHistory((listOf(q) + history.filter { !it.equals(q, true) }).take(30))
+
+    fun removeHistory(q: String) = saveHistory(history.filter { it != q })
+
+    private fun saveHistory(list: List<String>) =
+        p.edit().putString("history", org.json.JSONArray(list).toString()).apply()
 }
 
 object Net {

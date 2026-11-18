@@ -29,7 +29,32 @@ class Details(
     val avatar: String?,
     val subs: String,
     val description: String,
+    val factoids: List<Pair<String, String>>, // значение → подпись (лайки, просмотры, дата)
+    val commentsCount: String,
+    val teaserText: String,
+    val teaserAvatar: String?,
+    val commentsToken: String?,
     val related: Page,
+)
+
+class Comment(
+    val id: String,
+    val author: String,
+    val avatar: String?,
+    val text: String,
+    val time: String,
+    val likes: String,
+    val replies: String,
+    val repliesToken: String?,
+    val replyParams: String?,
+)
+
+class CommentPage(
+    val items: List<Comment>,
+    val continuation: String?,
+    val sortTokens: List<String>, // [популярные, новые]
+    val createParams: String?,
+    val count: String,
 )
 
 /** Авторизованные запросы к внутреннему API YouTube: ленты, поиск, рекомендации, история. */
@@ -80,17 +105,32 @@ object InnerTube {
         return if (exclude == null) p else Page(p.items.filter { it.id != exclude }, p.continuation)
     }
 
-    /** Страница видео: описание, канал и рекомендации. */
+    /** Страница видео: описание, канал, комментарии и рекомендации. */
     fun next(videoId: String): Details {
         val j = post("next", JSONObject().put("videoId", videoId))
         val p = find(j, "videoPrimaryInfoRenderer")
         val s = find(j, "videoSecondaryInfoRenderer")
         val owner = s?.optJSONObject("owner")?.optJSONObject("videoOwnerRenderer")
-        val views = p?.optJSONObject("viewCount")?.optJSONObject("videoViewCountRenderer")
-            ?.let { (it.optJSONObject("viewCount") ?: it.optJSONObject("shortViewCount")).text() }.orEmpty()
-        val date = p?.optJSONObject("dateText").text()
+        val vc = p?.optJSONObject("viewCount")?.optJSONObject("videoViewCountRenderer")
+        val views = (vc?.optJSONObject("shortViewCount") ?: vc?.optJSONObject("viewCount")).text()
+        val date = (p?.optJSONObject("relativeDateText") ?: p?.optJSONObject("dateText")).text()
         val desc = s?.optJSONObject("attributedDescription")?.optString("content")?.takeIf { it.isNotEmpty() }
             ?: s?.optJSONObject("description").text()
+
+        val factoids = ArrayList<Pair<String, String>>()
+        find(j, "videoDescriptionHeaderRenderer")?.optJSONArray("factoid")?.let { a ->
+            for (i in 0 until a.length()) {
+                val f = find(a.opt(i), "factoidRenderer") ?: continue
+                factoids += f.optJSONObject("value").text() to f.optJSONObject("label").text()
+            }
+        }
+
+        val entry = find(j, "commentsEntryPointHeaderRenderer")
+        val teaser = entry?.let { find(it, "commentsEntryPointTeaserRenderer") }
+        val commentsToken = (findWhere(j) { it.optString("sectionIdentifier") == "comment-item-section" }
+            ?: findWhere(j) { it.optString("panelIdentifier") == "engagement-panel-comments-section" })
+            ?.let { find(it, "continuationCommand") }?.optString("token")?.takeIf { it.isNotEmpty() }
+
         val related = parse(j)
         return Details(
             title = p?.optJSONObject("title").text(),
@@ -99,8 +139,149 @@ object InnerTube {
             avatar = pickThumb(owner?.optJSONObject("thumbnail")?.optJSONArray("thumbnails"), 88),
             subs = owner?.optJSONObject("subscriberCountText").text(),
             description = desc,
+            factoids = factoids,
+            commentsCount = entry?.optJSONObject("commentCount").text(),
+            teaserText = teaser?.optJSONObject("teaserContent").text(),
+            teaserAvatar = pickThumb(teaser?.optJSONObject("teaserAvatar")?.optJSONArray("thumbnails"), 88),
+            commentsToken = commentsToken,
             related = Page(related.items.filter { it.id != videoId }, related.continuation),
         )
+    }
+
+    // ---------- комментарии ----------
+
+    fun comments(token: String): CommentPage {
+        val j = post("next", JSONObject().put("continuation", token))
+        val ents = HashMap<String, JSONObject>()
+        j.optJSONObject("frameworkUpdates")?.optJSONObject("entityBatchUpdate")?.optJSONArray("mutations")?.let { m ->
+            for (i in 0 until m.length()) {
+                val x = m.optJSONObject(i) ?: continue
+                val payload = x.optJSONObject("payload") ?: continue
+                ents[x.optString("entityKey")] = payload
+            }
+        }
+        val out = ArrayList<Comment>()
+        var cont: String? = null
+        var header: JSONObject? = null
+
+        fun walk(n: Any?) {
+            when (n) {
+                is JSONObject -> {
+                    n.optJSONObject("commentThreadRenderer")?.let { t ->
+                        val token = t.optJSONObject("replies")?.let { find(it, "continuationCommand") }
+                            ?.optString("token")?.takeIf { it.isNotEmpty() }
+                        val c = t.optJSONObject("commentViewModel")?.optJSONObject("commentViewModel")
+                            ?.let { fromViewModel(it, ents, token) }
+                            ?: t.optJSONObject("comment")?.optJSONObject("commentRenderer")
+                                ?.let { fromCommentRenderer(it, token) }
+                        c?.let { out += it }
+                        return
+                    }
+                    n.optJSONObject("commentViewModel")?.takeIf { it.has("commentKey") }?.let { vm ->
+                        fromViewModel(vm, ents, null)?.let { out += it }
+                        return
+                    }
+                    n.optJSONObject("commentRenderer")?.let { r ->
+                        fromCommentRenderer(r, null)?.let { out += it }
+                        return
+                    }
+                    n.optJSONObject("commentsHeaderRenderer")?.let {
+                        header = it
+                        return
+                    }
+                    n.optJSONObject("continuationItemRenderer")?.let { c ->
+                        find(c, "continuationCommand")?.optString("token")?.takeIf { it.isNotEmpty() }?.let { cont = it }
+                        return
+                    }
+                    val keys = n.keys()
+                    while (keys.hasNext()) {
+                        val k = keys.next()
+                        if (k != "frameworkUpdates" && k != "responseContext") walk(n.opt(k))
+                    }
+                }
+                is JSONArray -> for (i in 0 until n.length()) walk(n.opt(i))
+            }
+        }
+        walk(j)
+
+        val h = header
+        val sort = ArrayList<String>()
+        h?.optJSONObject("sortMenu")?.let { sm ->
+            val items = findArray(sm, "subMenuItems")
+            if (items != null) for (i in 0 until items.length()) {
+                find(items.opt(i), "continuationCommand")?.optString("token")?.takeIf { it.isNotEmpty() }?.let { sort += it }
+            }
+        }
+        return CommentPage(
+            items = out,
+            continuation = cont,
+            sortTokens = sort,
+            createParams = h?.let { find(it, "createCommentEndpoint") }?.optString("createCommentParams")?.takeIf { it.isNotEmpty() },
+            count = (h?.optJSONObject("countText") ?: h?.optJSONObject("commentsCount")).text(),
+        )
+    }
+
+    private fun fromViewModel(vm: JSONObject, ents: Map<String, JSONObject>, token: String?): Comment? {
+        val p = ents[vm.optString("commentKey")]?.optJSONObject("commentEntityPayload") ?: return null
+        val props = p.optJSONObject("properties")
+        val author = p.optJSONObject("author")
+        val tb = p.optJSONObject("toolbar")
+        val surface = ents[vm.optString("commentSurfaceKey")]
+        return Comment(
+            id = props?.optString("commentId").orEmpty(),
+            author = author?.optString("displayName").orEmpty(),
+            avatar = author?.optString("avatarThumbnailUrl")?.takeIf { it.isNotEmpty() }?.let { fixUrl(it) },
+            text = props?.optJSONObject("content")?.optString("content").orEmpty(),
+            time = props?.optString("publishedTime").orEmpty(),
+            likes = tb?.optString("likeCountNotliked")?.trim().orEmpty(),
+            replies = tb?.optString("replyCount")?.trim().orEmpty(),
+            repliesToken = token,
+            replyParams = surface?.let { find(it, "createCommentReplyEndpoint") }?.optString("createReplyParams")
+                ?.takeIf { it.isNotEmpty() },
+        )
+    }
+
+    private fun fromCommentRenderer(r: JSONObject, token: String?): Comment? {
+        val id = r.optString("commentId").ifEmpty { return null }
+        return Comment(
+            id = id,
+            author = r.optJSONObject("authorText").text(),
+            avatar = pickThumb(r.optJSONObject("authorThumbnail")?.optJSONArray("thumbnails"), 88),
+            text = r.optJSONObject("contentText").text(),
+            time = r.optJSONObject("publishedTimeText").text(),
+            likes = r.optJSONObject("voteCount").text(),
+            replies = r.optInt("replyCount").takeIf { it > 0 }?.toString().orEmpty(),
+            repliesToken = token,
+            replyParams = find(r, "createCommentReplyEndpoint")?.optString("createReplyParams")?.takeIf { it.isNotEmpty() },
+        )
+    }
+
+    fun createComment(params: String, text: String): Boolean =
+        ok(post("comment/create_comment", JSONObject().put("createCommentParams", params).put("commentText", text)))
+
+    fun createReply(params: String, text: String): Boolean =
+        ok(post("comment/create_comment_reply", JSONObject().put("createReplyParams", params).put("commentText", text)))
+
+    private fun ok(j: JSONObject) = j.optJSONArray("actions") != null || j.toString().contains("STATUS_SUCCEEDED")
+
+    // ---------- подсказки поиска ----------
+
+    fun suggestions(q: String): List<String> {
+        val url = "https://suggestqueries-clients6.youtube.com/complete/search".toHttpUrlOrNull()!!.newBuilder()
+            .addQueryParameter("client", "youtube")
+            .addQueryParameter("ds", "yt")
+            .addQueryParameter("hl", "ru")
+            .addQueryParameter("gl", "by")
+            .addQueryParameter("q", q)
+            .build()
+        Net.http.newCall(Request.Builder().url(url).header("User-Agent", Net.UA).build()).execute().use { r ->
+            val body = r.body?.string().orEmpty()
+            val start = body.indexOf('(')
+            val end = body.lastIndexOf(')')
+            if (start < 0 || end <= start) return emptyList()
+            val arr = JSONArray(body.substring(start + 1, end)).optJSONArray(1) ?: return emptyList()
+            return (0 until arr.length()).mapNotNull { arr.optJSONArray(it)?.optString(0)?.takeIf { s -> s.isNotEmpty() } }
+        }
     }
 
     /** Имя и аватар активного аккаунта. */
@@ -132,8 +313,16 @@ object InnerTube {
     private val VIDEO_KEYS = listOf("videoRenderer", "gridVideoRenderer", "compactVideoRenderer")
     private val SKIP = setOf(
         "responseContext", "frameworkUpdates", "topbar", "reelShelfRenderer",
-        "trackingParams", "playerOverlays", "videoPrimaryInfoRenderer", "videoSecondaryInfoRenderer"
+        "trackingParams", "playerOverlays", "videoPrimaryInfoRenderer", "videoSecondaryInfoRenderer",
+        "engagementPanels"
     )
+
+    /** Прямые трансляции и предстоящие премьеры не показываем. */
+    private fun isLive(o: JSONObject): Boolean {
+        val s = o.toString()
+        return s.contains("LIVE_NOW") || s.contains("BADGE_STYLE_LIVE") || s.contains("\"style\":\"LIVE\"") ||
+            s.contains("UPCOMING")
+    }
 
     private fun parse(root: JSONObject): Page {
         val out = LinkedHashMap<String, Video>()
@@ -169,6 +358,7 @@ object InnerTube {
 
     private fun fromRenderer(v: JSONObject): Video? {
         val id = v.optString("videoId").ifEmpty { return null }
+        if (isLive(v)) return null
         val channel = (v.optJSONObject("ownerText")
             ?: v.optJSONObject("shortBylineText")
             ?: v.optJSONObject("longBylineText")).text()
@@ -194,6 +384,7 @@ object InnerTube {
     private fun fromLockup(l: JSONObject): Video? {
         if (l.optString("contentType") != "LOCKUP_CONTENT_TYPE_VIDEO") return null
         val id = l.optString("contentId").ifEmpty { return null }
+        if (isLive(l)) return null
         val md = l.optJSONObject("metadata")?.optJSONObject("lockupMetadataViewModel")
         val parts = mutableListOf<String>()
         val rows = md?.optJSONObject("metadata")
@@ -227,6 +418,22 @@ object InnerTube {
         is JSONArray -> (0 until n.length()).firstNotNullOfOrNull { find(n.opt(it), key) }
         else -> null
     }
+
+    private fun findArray(n: Any?, key: String): JSONArray? = when (n) {
+        is JSONObject -> n.optJSONArray(key)
+            ?: n.keys().asSequence().firstNotNullOfOrNull { findArray(n.opt(it), key) }
+        is JSONArray -> (0 until n.length()).firstNotNullOfOrNull { findArray(n.opt(it), key) }
+        else -> null
+    }
+
+    /** Первый объект, подходящий под условие. */
+    private fun findWhere(n: Any?, pred: (JSONObject) -> Boolean): JSONObject? = when (n) {
+        is JSONObject -> if (pred(n)) n else n.keys().asSequence().firstNotNullOfOrNull { findWhere(n.opt(it), pred) }
+        is JSONArray -> (0 until n.length()).firstNotNullOfOrNull { findWhere(n.opt(it), pred) }
+        else -> null
+    }
+
+    private fun fixUrl(u: String) = if (u.startsWith("//")) "https:$u" else u
 
     /** Длительность у новых карточек лежит в бейдже на превью. */
     private fun findBadge(n: JSONObject): String? =

@@ -4,16 +4,32 @@
     android:layout_height="match_parent"
     android:orientation="vertical">
 
+    <!-- Шапка -->
     <LinearLayout
+        android:id="@+id/header"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
+        android:layout_height="52dp"
         android:gravity="center_vertical"
-        android:orientation="horizontal">
+        android:orientation="horizontal"
+        android:paddingStart="16dp">
 
-        <TextView android:id="@+id/tabHome" style="@style/Tab" android:text="Главная" />
-        <TextView android:id="@+id/tabSubs" style="@style/Tab" android:text="Подписки" />
-        <TextView android:id="@+id/tabHistory" style="@style/Tab" android:text="История" />
-        <TextView android:id="@+id/tabSearch" style="@style/Tab" android:text="Поиск" />
+        <TextView
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="YT Lite"
+            android:textColor="@color/text"
+            android:textSize="20sp"
+            android:textStyle="bold" />
+
+        <ImageView
+            android:id="@+id/searchBtn"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Поиск"
+            android:padding="12dp"
+            android:src="@drawable/ic_search" />
 
         <ImageView
             android:id="@+id/account"
@@ -25,51 +41,70 @@
             android:src="@drawable/ic_account" />
     </LinearLayout>
 
-    <EditText
-        android:id="@+id/query"
+    <!-- Строка поиска -->
+    <LinearLayout
+        android:id="@+id/searchBar"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginHorizontal="8dp"
-        android:hint="Поиск"
-        android:imeOptions="actionSearch"
-        android:inputType="text"
-        android:singleLine="true"
-        android:textColor="@color/text"
-        android:textColorHint="@color/sub"
-        android:visibility="gone" />
+        android:layout_height="52dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:visibility="gone">
+
+        <ImageButton
+            android:id="@+id/searchBack"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Назад"
+            android:src="@drawable/ic_back" />
+
+        <EditText
+            android:id="@+id/query"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:background="@drawable/chip"
+            android:hint="Поиск на YouTube"
+            android:imeOptions="actionSearch"
+            android:inputType="text"
+            android:paddingHorizontal="14dp"
+            android:singleLine="true"
+            android:textColor="@color/text"
+            android:textColorHint="@color/sub"
+            android:textSize="15sp" />
+
+        <ImageButton
+            android:id="@+id/searchClear"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="?android:attr/selectableItemBackgroundBorderless"
+            android:contentDescription="Очистить"
+            android:src="@drawable/ic_close" />
+    </LinearLayout>
 
     <FrameLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
         android:layout_weight="1">
 
-        <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
-            android:id="@+id/refresh"
+        <androidx.viewpager2.widget.ViewPager2
+            android:id="@+id/pager"
             android:layout_width="match_parent"
-            android:layout_height="match_parent">
+            android:layout_height="match_parent" />
+
+        <FrameLayout
+            android:id="@+id/searchContainer"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@color/bg"
+            android:visibility="gone">
 
             <androidx.recyclerview.widget.RecyclerView
-                android:id="@+id/list"
+                android:id="@+id/suggestions"
                 android:layout_width="match_parent"
-                android:layout_height="match_parent" />
-        </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
-
-        <ProgressBar
-            android:id="@+id/progress"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center"
-            android:visibility="gone" />
-
-        <TextView
-            android:id="@+id/message"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_gravity="center"
-            android:gravity="center"
-            android:padding="24dp"
-            android:textColor="@color/sub"
-            android:visibility="gone" />
+                android:layout_height="match_parent"
+                android:background="@color/bg" />
+        </FrameLayout>
     </FrameLayout>
 
     <!-- Мини-плеер -->
@@ -144,6 +179,30 @@
                 android:background="?android:attr/selectableItemBackgroundBorderless"
                 android:contentDescription="Закрыть"
                 android:src="@drawable/ic_close" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <!-- Нижние вкладки -->
+    <LinearLayout
+        android:id="@+id/nav"
+        android:layout_width="match_parent"
+        android:layout_height="56dp"
+        android:background="@color/bg"
+        android:orientation="horizontal">
+
+        <LinearLayout android:id="@+id/navHome" style="@style/NavItem">
+            <ImageView style="@style/NavIcon" android:src="@drawable/ic_home" />
+            <TextView style="@style/NavLabel" android:text="Главная" />
+        </LinearLayout>
+
+        <LinearLayout android:id="@+id/navSubs" style="@style/NavItem">
+            <ImageView style="@style/NavIcon" android:src="@drawable/ic_subs" />
+            <TextView style="@style/NavLabel" android:text="Подписки" />
+        </LinearLayout>
+
+        <LinearLayout android:id="@+id/navHistory" style="@style/NavItem">
+            <ImageView style="@style/NavIcon" android:src="@drawable/ic_history" />
+            <TextView style="@style/NavLabel" android:text="История" />
         </LinearLayout>
     </LinearLayout>
 </LinearLayout>

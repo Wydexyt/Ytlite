@@ -7,14 +7,18 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.Parcelable
+import android.text.Editable
+import android.text.TextWatcher
 import android.view.Menu
 import android.view.View
+import android.view.ViewGroup
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.ImageButton
 import android.widget.ImageView
+import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.ProgressBar
 import android.widget.TextView
@@ -24,42 +28,49 @@ import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
+import androidx.viewpager2.widget.ViewPager2
 import coil.load
 import com.google.common.util.concurrent.ListenableFuture
 
 class MainActivity : Activity() {
 
-    private enum class Tab(val browseId: String?, val needsLogin: Boolean) {
-        HOME("FEwhat_to_watch", false),
-        SUBS("FEsubscriptions", true),
-        HISTORY("FEhistory", true),
-        SEARCH(null, false),
-    }
+    private class TabDef(val browseId: String, val needsLogin: Boolean, val navId: Int)
 
-    /** Состояние вкладки живёт, пока открыто приложение: список, позиция, догрузка. */
-    private inner class TabState {
-        val adapter = VideoAdapter { openVideo(it) }
-        var continuation: String? = null
-        var scroll: Parcelable? = null
-        var loaded = false
-        var loading = false
-        var message: String? = null
-        var generation = 0
-    }
+    private val tabs = listOf(
+        TabDef("FEwhat_to_watch", false, R.id.navHome),
+        TabDef("FEsubscriptions", true, R.id.navSubs),
+        TabDef("FEhistory", true, R.id.navHistory),
+    )
 
-    private lateinit var list: RecyclerView
-    private lateinit var layout: LinearLayoutManager
-    private lateinit var refresh: SwipeRefreshLayout
-    private lateinit var progress: ProgressBar
-    private lateinit var message: TextView
-    private lateinit var query: EditText
+    private lateinit var pager: ViewPager2
+    private lateinit var feeds: List<Feed>
+    private lateinit var navItems: List<View>
     private lateinit var accountIcon: ImageView
-    private lateinit var tabViews: Map<Tab, View>
-
-    private var states = Tab.entries.associateWith { TabState() }
-    private var tab = Tab.HOME
     private var shownAccount: String? = null
+
+    // поиск
+    private lateinit var header: View
+    private lateinit var searchBar: View
+    private lateinit var searchContainer: FrameLayout
+    private lateinit var suggestions: RecyclerView
+    private lateinit var query: EditText
+    private lateinit var searchFeed: Feed
+    private var searchQuery = ""
+    private var suggestGen = 0
+    private val suggestAdapter = SuggestionAdapter(
+        onPick = { submitSearch(it) },
+        onInsert = { query.setText("$it "); query.setSelection(query.text.length) },
+        onRemove = { q ->
+            AlertDialog.Builder(this)
+                .setMessage("Удалить «$q» из истории?")
+                .setPositiveButton("Удалить") { _, _ ->
+                    Prefs.removeHistory(q)
+                    updateSuggestions()
+                }
+                .setNegativeButton("Отмена", null)
+                .show()
+        },
+    )
 
     // мини-плеер
     private lateinit var mini: View
@@ -84,62 +95,91 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-        list = findViewById(R.id.list)
-        refresh = findViewById(R.id.refresh)
-        progress = findViewById(R.id.progress)
-        message = findViewById(R.id.message)
-        query = findViewById(R.id.query)
         accountIcon = findViewById(R.id.account)
+        header = findViewById(R.id.header)
+        searchBar = findViewById(R.id.searchBar)
+        searchContainer = findViewById(R.id.searchContainer)
+        suggestions = findViewById(R.id.suggestions)
+        query = findViewById(R.id.query)
         mini = findViewById(R.id.mini)
         miniProgress = findViewById(R.id.miniProgress)
         miniTitle = findViewById(R.id.miniTitle)
         miniChannel = findViewById(R.id.miniChannel)
         miniThumb = findViewById(R.id.miniThumb)
         miniPlay = findViewById(R.id.miniPlay)
+        pager = findViewById(R.id.pager)
 
-        layout = LinearLayoutManager(this)
-        list.layoutManager = layout
-        list.addOnScrollListener(object : RecyclerView.OnScrollListener() {
-            override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
-                if (dy > 0 && layout.findLastVisibleItemPosition() >= rv.adapter!!.itemCount - 5) loadMore()
+        // Вкладки: каждая — отдельная лента, живут все три (кэш и позиция сохраняются)
+        feeds = tabs.map { t ->
+            Feed(this, pager, ::openVideo, t.needsLogin, "browse") { InnerTube.browse(t.browseId) }
+        }
+        pager.offscreenPageLimit = feeds.size
+        pager.adapter = object : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+            override fun getItemCount() = feeds.size
+            override fun getItemViewType(position: Int) = position
+            override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+                val v = feeds[viewType].root
+                (v.parent as? ViewGroup)?.removeView(v)
+                v.layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+                return object : RecyclerView.ViewHolder(v) {}
+            }
+            override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {}
+        }
+        pager.registerOnPageChangeCallback(object : ViewPager2.OnPageChangeCallback() {
+            override fun onPageSelected(position: Int) {
+                navItems.forEachIndexed { i, v -> v.alpha = if (i == position) 1f else 0.55f }
+                if (!feeds[position].loaded) feeds[position].load()
             }
         })
 
-        refresh.setColorSchemeColors(0xFFFF0033.toInt())
-        refresh.setProgressBackgroundColorSchemeColor(0xFF272727.toInt())
-        refresh.setOnRefreshListener {
-            if (tab == Tab.SEARCH && query.text.isBlank()) refresh.isRefreshing = false else load(tab, pull = true)
+        navItems = tabs.map { findViewById(it.navId) }
+        navItems.forEachIndexed { i, v ->
+            v.setOnClickListener {
+                if (searchContainer.visibility == View.VISIBLE) exitSearch()
+                if (pager.currentItem == i) feeds[i].scrollTop() else pager.setCurrentItem(i, false)
+            }
         }
 
-        tabViews = mapOf(
-            Tab.HOME to findViewById(R.id.tabHome),
-            Tab.SUBS to findViewById(R.id.tabSubs),
-            Tab.HISTORY to findViewById(R.id.tabHistory),
-            Tab.SEARCH to findViewById(R.id.tabSearch),
-        )
-        tabViews.forEach { (t, v) -> v.setOnClickListener { select(t) } }
-        accountIcon.setOnClickListener { showAccountMenu() }
-
+        // Поиск
+        searchFeed = Feed(this, searchContainer, ::openVideo, false, "search") { InnerTube.search(searchQuery) }
+        searchContainer.addView(searchFeed.root, 0)
+        suggestions.layoutManager = LinearLayoutManager(this)
+        suggestions.adapter = suggestAdapter
+        findViewById<View>(R.id.searchBtn).setOnClickListener { enterSearch() }
+        findViewById<View>(R.id.searchBack).setOnClickListener { exitSearch() }
+        findViewById<View>(R.id.searchClear).setOnClickListener {
+            query.setText("")
+            showSuggestions()
+        }
+        query.setOnClickListener { showSuggestions() }
+        query.setOnFocusChangeListener { _, has -> if (has) showSuggestions() }
+        query.addTextChangedListener(object : TextWatcher {
+            override fun beforeTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun onTextChanged(s: CharSequence?, a: Int, b: Int, c: Int) {}
+            override fun afterTextChanged(s: Editable?) {
+                if (suggestions.visibility == View.VISIBLE) updateSuggestions()
+            }
+        })
         query.setOnEditorActionListener { _, action, _ ->
             if (action == EditorInfo.IME_ACTION_SEARCH) {
-                getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(query.windowToken, 0)
-                load(Tab.SEARCH)
+                submitSearch(query.text.toString())
                 true
             } else false
         }
 
+        accountIcon.setOnClickListener { showAccountMenu() }
+
         mini.setOnClickListener { startActivity(Intent(this, PlayerActivity::class.java)) }
         miniPlay.setOnClickListener { controller?.let { if (it.isPlaying) it.pause() else it.play() } }
-        miniClose.setOnClickListener {
+        findViewById<View>(R.id.miniClose).setOnClickListener {
             controller?.run { stop(); clearMediaItems() }
             mini.visibility = View.GONE
         }
 
         shownAccount = Auth.active?.id
-        select(Tab.HOME)
+        navItems.forEachIndexed { i, v -> v.alpha = if (i == 0) 1f else 0.55f }
+        feeds[0].load()
     }
-
-    private val miniClose: View get() = findViewById(R.id.miniClose)
 
     override fun onStart() {
         super.onStart()
@@ -166,7 +206,6 @@ class MainActivity : Activity() {
         super.onResume()
         updateAccountIcon()
         if (Auth.active?.id != shownAccount) accountChanged()
-        // Имя и аватар нового аккаунта
         val acc = Auth.active
         if (acc != null && acc.name.isEmpty()) {
             Net.io.execute {
@@ -177,7 +216,14 @@ class MainActivity : Activity() {
         }
     }
 
-    // ---------- вкладки и ленты ----------
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        when {
+            searchContainer.visibility != View.VISIBLE -> super.onBackPressed()
+            suggestions.visibility == View.VISIBLE && searchFeed.loaded -> hideSuggestions()
+            else -> exitSearch()
+        }
+    }
 
     private fun openVideo(v: Video) {
         Streams.prefetch(v.id) // потоки начинают готовиться ещё до открытия плеера
@@ -188,117 +234,84 @@ class MainActivity : Activity() {
         )
     }
 
-    private fun select(t: Tab) {
-        if (t == tab && list.adapter != null) {
-            list.smoothScrollToPosition(0)
-            return
-        }
-        states[tab]?.scroll = layout.onSaveInstanceState()
-        tab = t
-        val st = states.getValue(t)
-        tabViews.forEach { (k, v) -> v.alpha = if (k == t) 1f else 0.5f }
-        list.adapter = st.adapter
-        st.scroll?.let { layout.onRestoreInstanceState(it) }
-        query.visibility = if (t == Tab.SEARCH) View.VISIBLE else View.GONE
+    // ---------- поиск ----------
 
-        if (t == Tab.SEARCH && query.text.isBlank()) {
-            st.message = "Введите запрос"
-            query.requestFocus()
-            getSystemService(InputMethodManager::class.java).showSoftInput(query, 0)
-        } else if (!st.loaded && !st.loading) {
-            load(t)
-            return
-        }
-        render()
+    private fun enterSearch() {
+        header.visibility = View.GONE
+        searchBar.visibility = View.VISIBLE
+        searchContainer.visibility = View.VISIBLE
+        query.requestFocus()
+        showSuggestions()
+        getSystemService(InputMethodManager::class.java).showSoftInput(query, InputMethodManager.SHOW_IMPLICIT)
     }
 
-    private fun render() {
-        val st = states.getValue(tab)
-        progress.visibility = if (st.loading && st.adapter.isEmpty && !refresh.isRefreshing) View.VISIBLE else View.GONE
-        if (!st.loading) refresh.isRefreshing = false
-        message.text = st.message
-        message.visibility = if (st.message != null && st.adapter.isEmpty && !st.loading) View.VISIBLE else View.GONE
+    private fun exitSearch() {
+        hideKeyboard()
+        searchBar.visibility = View.GONE
+        header.visibility = View.VISIBLE
+        searchContainer.visibility = View.GONE
+        query.clearFocus()
     }
 
-    private fun load(t: Tab, pull: Boolean = false) {
-        val st = states.getValue(t)
+    private fun submitSearch(q: String) {
+        val text = q.trim()
+        if (text.isEmpty()) return
+        query.setText(text)
+        query.setSelection(text.length)
+        Prefs.addHistory(text)
+        searchQuery = text
+        hideSuggestions()
+        searchFeed.load()
+    }
+
+    private fun showSuggestions() {
+        suggestions.visibility = View.VISIBLE
+        updateSuggestions()
+    }
+
+    private fun hideSuggestions() {
+        suggestions.visibility = View.GONE
+        hideKeyboard()
+        query.clearFocus()
+    }
+
+    private fun hideKeyboard() =
+        getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(query.windowToken, 0)
+
+    private fun updateSuggestions() {
         val q = query.text.toString().trim()
-        val g = ++st.generation
-        st.continuation = null
-        st.message = null
-        if (t.needsLogin && !Auth.loggedIn) {
-            st.adapter.submit(emptyList())
-            st.loaded = true
-            st.loading = false
-            st.message = "Войдите в аккаунт"
-            if (t == tab) render()
-            return
-        }
-        if (!pull) st.adapter.submit(emptyList())
-        st.loading = true
-        if (t == tab) render()
-        Net.io.execute {
-            val r = runCatching { if (t == Tab.SEARCH) InnerTube.search(q) else InnerTube.browse(t.browseId!!) }
-            runOnUiThread {
-                if (g != st.generation) return@runOnUiThread
-                st.loading = false
-                st.loaded = true
-                r.onSuccess {
-                    st.adapter.submit(it.items)
-                    st.continuation = it.continuation
-                    if (it.items.isEmpty()) st.message = "Здесь пусто"
-                    if (t == tab) list.scrollToPosition(0)
-                }.onFailure { st.message = "Ошибка: ${it.message}" }
-                if (t == tab) render()
+        val g = ++suggestGen
+        val hist = Prefs.history.filter { q.isEmpty() || it.startsWith(q, ignoreCase = true) }
+        suggestAdapter.set(hist.take(if (q.isEmpty()) 30 else 3).map { it to true })
+        if (q.isEmpty()) return
+        // небольшая задержка, чтобы не слать запрос на каждую букву
+        ui.postDelayed({
+            if (g != suggestGen) return@postDelayed
+            Net.io.execute {
+                val s = runCatching { InnerTube.suggestions(q) }.getOrDefault(emptyList())
+                runOnUiThread {
+                    if (g != suggestGen) return@runOnUiThread
+                    val h = hist.take(3)
+                    suggestAdapter.set(h.map { it to true } + s.filter { x -> h.none { it.equals(x, true) } }.map { it to false })
+                }
             }
-        }
-    }
-
-    private fun loadMore() {
-        val t = tab
-        val st = states.getValue(t)
-        if (st.loading) return
-        val token = st.continuation ?: return
-        st.loading = true
-        val g = st.generation
-        val endpoint = if (t == Tab.SEARCH) "search" else "browse"
-        Net.io.execute {
-            val r = runCatching { InnerTube.more(endpoint, token) }
-            runOnUiThread {
-                if (g != st.generation) return@runOnUiThread
-                st.loading = false
-                r.onSuccess {
-                    st.adapter.append(it.items)
-                    st.continuation = it.continuation
-                }.onFailure { st.continuation = null }
-            }
-        }
+        }, 200)
     }
 
     // ---------- аккаунты ----------
 
     private fun updateAccountIcon() {
         val acc = Auth.active
-        if (acc?.avatar != null) {
-            accountIcon.setPadding(dp(10))
-            accountIcon.loadAvatar(acc.avatar)
-        } else {
-            accountIcon.setPadding(dp(10))
-            accountIcon.setImageResource(R.drawable.ic_account)
-        }
+        if (acc?.avatar != null) accountIcon.loadAvatar(acc.avatar)
+        else accountIcon.setImageResource(R.drawable.ic_account)
     }
-
-    private fun ImageView.setPadding(p: Int) = setPadding(p, p, p, p)
-
-    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
     private fun accountChanged() {
         shownAccount = Auth.active?.id
-        states = Tab.entries.associateWith { TabState() }
-        val t = tab
-        tab = Tab.HOME
-        list.adapter = null
-        select(t)
+        feeds.forEach { it.reset() }
+        searchFeed.reset()
+        feeds[pager.currentItem].load()
+        if (searchQuery.isNotEmpty()) searchFeed.load()
     }
 
     private fun showAccountMenu() {

@@ -17,20 +17,211 @@
             android:layout_height="match_parent" />
 
         <ImageButton
-            android:id="@+id/quality"
+            android:id="@+id/settings"
             android:layout_width="44dp"
             android:layout_height="44dp"
             android:layout_gravity="top|end"
             android:layout_margin="4dp"
             android:background="?android:attr/selectableItemBackgroundBorderless"
-            android:contentDescription="Качество"
+            android:contentDescription="Настройки"
             android:src="@drawable/ic_settings"
             android:visibility="gone" />
     </FrameLayout>
 
-    <androidx.recyclerview.widget.RecyclerView
-        android:id="@+id/details"
+    <FrameLayout
+        android:id="@+id/below"
         android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1" />
+        android:layout_weight="1">
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/details"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
+
+        <!-- Панель описания / комментариев, накрывает всё под видео -->
+        <LinearLayout
+            android:id="@+id/panel"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/panel_bg"
+            android:clickable="true"
+            android:focusable="true"
+            android:orientation="vertical"
+            android:visibility="gone">
+
+            <View
+                android:layout_width="40dp"
+                android:layout_height="4dp"
+                android:layout_gravity="center_horizontal"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/chip" />
+
+            <LinearLayout
+                android:id="@+id/panelHeader"
+                android:layout_width="match_parent"
+                android:layout_height="48dp"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingStart="8dp">
+
+                <ImageButton
+                    android:id="@+id/panelBack"
+                    android:layout_width="44dp"
+                    android:layout_height="44dp"
+                    android:background="?android:attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Назад"
+                    android:src="@drawable/ic_back"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/panelTitle"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:layout_weight="1"
+                    android:textColor="@color/text"
+                    android:textSize="17sp"
+                    android:textStyle="bold" />
+
+                <ImageButton
+                    android:id="@+id/panelClose"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:background="?android:attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Закрыть"
+                    android:src="@drawable/ic_close" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:id="@+id/sortRow"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal"
+                android:paddingHorizontal="16dp"
+                android:paddingBottom="8dp"
+                android:visibility="gone">
+
+                <TextView android:id="@+id/sortTop" style="@style/Chip" android:text="Популярные" />
+                <TextView android:id="@+id/sortNew" style="@style/Chip" android:text="Новые" />
+            </LinearLayout>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="#FF333333" />
+
+            <FrameLayout
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1">
+
+                <ScrollView
+                    android:id="@+id/descScroll"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:visibility="gone">
+
+                    <LinearLayout
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:orientation="vertical"
+                        android:padding="16dp">
+
+                        <TextView
+                            android:id="@+id/descTitle"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:textColor="@color/text"
+                            android:textSize="18sp"
+                            android:textStyle="bold" />
+
+                        <LinearLayout
+                            android:id="@+id/factoids"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="16dp"
+                            android:orientation="horizontal" />
+
+                        <TextView
+                            android:id="@+id/descText"
+                            android:layout_width="match_parent"
+                            android:layout_height="wrap_content"
+                            android:layout_marginTop="16dp"
+                            android:background="@drawable/card"
+                            android:lineSpacingExtra="2dp"
+                            android:padding="12dp"
+                            android:textColor="@color/text"
+                            android:textColorLink="@color/link"
+                            android:textIsSelectable="false"
+                            android:textSize="14sp" />
+                    </LinearLayout>
+                </ScrollView>
+
+                <androidx.recyclerview.widget.RecyclerView
+                    android:id="@+id/commentList"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:visibility="gone" />
+
+                <ProgressBar
+                    android:id="@+id/panelProgress"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:visibility="gone" />
+
+                <TextView
+                    android:id="@+id/panelMessage"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:padding="24dp"
+                    android:textColor="@color/sub"
+                    android:visibility="gone" />
+            </FrameLayout>
+
+            <LinearLayout
+                android:id="@+id/inputRow"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:background="#FF282828"
+                android:gravity="center_vertical"
+                android:orientation="horizontal"
+                android:paddingStart="12dp"
+                android:paddingTop="6dp"
+                android:paddingBottom="6dp"
+                android:visibility="gone">
+
+                <ImageView
+                    android:id="@+id/inputAvatar"
+                    android:layout_width="28dp"
+                    android:layout_height="28dp" />
+
+                <EditText
+                    android:id="@+id/input"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="10dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/chip"
+                    android:inputType="textMultiLine|textCapSentences"
+                    android:maxLines="5"
+                    android:minHeight="40dp"
+                    android:paddingHorizontal="12dp"
+                    android:paddingVertical="8dp"
+                    android:textColor="@color/text"
+                    android:textColorHint="@color/sub"
+                    android:textSize="14sp" />
+
+                <ImageButton
+                    android:id="@+id/send"
+                    android:layout_width="48dp"
+                    android:layout_height="48dp"
+                    android:background="?android:attr/selectableItemBackgroundBorderless"
+                    android:contentDescription="Отправить"
+                    android:src="@drawable/ic_send" />
+            </LinearLayout>
+        </LinearLayout>
+    </FrameLayout>
 </LinearLayout>
