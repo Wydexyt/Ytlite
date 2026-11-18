@@ -22,6 +22,9 @@ import java.util.concurrent.ExecutionException
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 
+/** Видео 18+, которое наш плеер не смог получить: можно открыть в веб-плеере. */
+class AgeGateException(message: String) : Exception(message)
+
 /** Один поток: прямая ссылка и (если удалось) DASH-манифест для неё. */
 class Src(val url: String, val mpd: String?, val width: Int = 0, val height: Int = 0)
 
@@ -81,9 +84,13 @@ object Streams {
                 e.cause is AgeRestrictedContentException
             if (!age) throw e
             // Видео 18+: NewPipe ходит анонимно, поэтому запрашиваем от имени аккаунта
-            if (!Auth.loggedIn) throw IllegalStateException("Видео 18+: войдите в аккаунт, чтобы его посмотреть")
+            if (!Auth.loggedIn) throw AgeGateException(Lang.str(R.string.err_age_login))
             ErrorLog.log("18+ $id: пробую через аккаунт", e)
-            return AccountStreams.resolve(id)
+            return try {
+                AccountStreams.resolve(id)
+            } catch (e2: Exception) {
+                throw AgeGateException(e2.message ?: Lang.str(R.string.err_unavailable))
+            }
         }
         val dur = info.duration
 
@@ -113,7 +120,7 @@ object Streams {
         if (videos.isEmpty() || audio == null) {
             // Раздельных потоков нет — берём обычный (видео+звук вместе)
             val muxed = info.videoStreams.filter { it.isUrl }.maxByOrNull { it.height }
-                ?: throw IllegalStateException("Нет доступных потоков")
+                ?: throw IllegalStateException(Lang.str(R.string.err_no_streams))
             return Resolved(
                 listOf(Src(muxed.content, null, muxed.width, muxed.height)), null,
                 info.name, info.uploaderName.orEmpty(), info.thumbnails.maxByOrNull { it.width }?.url
@@ -174,11 +181,11 @@ object AccountStreams {
                 ErrorLog.log("18+ $id: клиент ТВ ${c.version}", e)
             }
         }
-        throw last ?: IllegalStateException("Видео недоступно")
+        throw last ?: IllegalStateException(Lang.str(R.string.err_unavailable))
     }
 
     private fun resolveWith(id: String, c: Client): Resolved {
-        val client = JSONObject().put("clientName", "TVHTML5").put("clientVersion", c.version).put("hl", "ru").put("gl", "BY")
+        val client = JSONObject().put("clientName", "TVHTML5").put("clientVersion", c.version).put("hl", Lang.hl).put("gl", Lang.gl)
         c.device.forEach { (k, v) -> client.put(k, v) }
         val body = JSONObject()
             .put("context", JSONObject().put("client", client))
@@ -201,11 +208,11 @@ object AccountStreams {
         }
         val ps = j.optJSONObject("playabilityStatus")
         if (ps?.optString("status") != "OK") {
-            throw IllegalStateException("Видео недоступно: " + (ps?.optString("reason")?.ifEmpty { null } ?: ps?.optString("status")))
+            throw IllegalStateException(Lang.str(R.string.err_unavailable) + ": " + (ps?.optString("reason")?.ifEmpty { null } ?: ps?.optString("status")))
         }
         val details = j.optJSONObject("videoDetails")
         val dur = details?.optString("lengthSeconds")?.toLongOrNull() ?: 0
-        val sd = j.optJSONObject("streamingData") ?: throw IllegalStateException("Нет streamingData")
+        val sd = j.optJSONObject("streamingData") ?: throw IllegalStateException("no streamingData")
         val formats = sd.optJSONArray("adaptiveFormats") ?: org.json.JSONArray()
 
         class F(val o: JSONObject, val url: String, val itag: ItagItem)
@@ -250,7 +257,7 @@ object AccountStreams {
                         ?.let { it.optJSONObject(it.length() - 1)?.optString("url") },
                 )
             }
-            throw IllegalStateException("Нет подходящих потоков ($stats)" + (firstError?.let { ": ${it.message}" } ?: ""))
+            throw IllegalStateException(Lang.str(R.string.err_no_streams) + " ($stats)" + (firstError?.let { ": ${it.message}" } ?: ""))
         }
 
         fun src(f: F) = Src(

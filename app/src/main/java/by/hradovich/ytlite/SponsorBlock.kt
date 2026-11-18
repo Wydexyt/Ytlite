@@ -10,14 +10,14 @@ class Segment(val start: Long, val end: Long, val category: String)
 object SponsorBlock {
     /** Категории SponsorBlock и их названия. */
     val CATEGORIES = linkedMapOf(
-        "sponsor" to "Спонсорская реклама",
-        "selfpromo" to "Самореклама автора",
-        "interaction" to "«Подпишитесь, поставьте лайк»",
-        "intro" to "Заставка",
-        "outro" to "Концовка, титры",
-        "preview" to "Превью и повторы",
-        "music_offtopic" to "Не-музыка в клипах",
-        "filler" to "Отступления не по теме",
+        "sponsor" to R.string.sb_sponsor,
+        "selfpromo" to R.string.sb_selfpromo,
+        "interaction" to R.string.sb_interaction,
+        "intro" to R.string.sb_intro,
+        "outro" to R.string.sb_outro,
+        "preview" to R.string.sb_preview,
+        "music_offtopic" to R.string.sb_music_offtopic,
+        "filler" to R.string.sb_filler,
     )
     val DEFAULT = setOf("sponsor", "selfpromo", "interaction")
 

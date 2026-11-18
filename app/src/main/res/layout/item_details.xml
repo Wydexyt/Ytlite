@@ -148,7 +148,7 @@
         android:drawableStart="@drawable/ic_share"
         android:drawablePadding="8dp"
         android:foreground="?android:attr/selectableItemBackground"
-        android:text="Поделиться"
+        android:text="@string/share"
         android:textStyle="bold" />
     </LinearLayout>
 

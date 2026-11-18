@@ -1,5 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+<LinearLayout
+    android:id="@+id/main"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical">
@@ -23,7 +29,7 @@
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:text="YT Lite"
+            android:text="@string/app_name"
             android:textColor="@color/text"
             android:textSize="20sp"
             android:textStyle="bold" />
@@ -33,7 +39,7 @@
             android:layout_width="48dp"
             android:layout_height="48dp"
             android:background="?android:attr/selectableItemBackgroundBorderless"
-            android:contentDescription="Поиск"
+            android:contentDescription="@string/search"
             android:padding="12dp"
             android:src="@drawable/ic_search" />
 
@@ -42,7 +48,7 @@
             android:layout_width="48dp"
             android:layout_height="48dp"
             android:background="?android:attr/selectableItemBackgroundBorderless"
-            android:contentDescription="Аккаунт"
+            android:contentDescription="@string/account"
             android:padding="10dp"
             android:src="@drawable/ic_account" />
     </LinearLayout>
@@ -61,7 +67,7 @@
             android:layout_width="48dp"
             android:layout_height="48dp"
             android:background="?android:attr/selectableItemBackgroundBorderless"
-            android:contentDescription="Назад"
+            android:contentDescription="@string/back"
             android:src="@drawable/ic_back" />
 
         <EditText
@@ -70,7 +76,7 @@
             android:layout_height="40dp"
             android:layout_weight="1"
             android:background="@drawable/chip"
-            android:hint="Поиск на YouTube"
+            android:hint="@string/search_hint"
             android:imeOptions="actionSearch"
             android:inputType="text"
             android:paddingHorizontal="14dp"
@@ -84,7 +90,7 @@
             android:layout_width="48dp"
             android:layout_height="48dp"
             android:background="?android:attr/selectableItemBackgroundBorderless"
-            android:contentDescription="Очистить"
+            android:contentDescription="@string/clear"
             android:src="@drawable/ic_close" />
     </LinearLayout>
 
@@ -111,6 +117,12 @@
                 android:layout_height="match_parent"
                 android:background="@color/bg" />
         </FrameLayout>
+
+        <!-- Страницы поверх лент: каналы, статистика -->
+        <FrameLayout
+            android:id="@+id/pages"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
     </FrameLayout>
 
     <!-- Мини-плеер -->
@@ -175,7 +187,7 @@
                 android:layout_width="48dp"
                 android:layout_height="48dp"
                 android:background="?android:attr/selectableItemBackgroundBorderless"
-                android:contentDescription="Плей/пауза"
+                android:contentDescription="@string/play_pause"
                 android:src="@drawable/ic_pause" />
 
             <ImageButton
@@ -183,7 +195,7 @@
                 android:layout_width="48dp"
                 android:layout_height="48dp"
                 android:background="?android:attr/selectableItemBackgroundBorderless"
-                android:contentDescription="Закрыть"
+                android:contentDescription="@string/close"
                 android:src="@drawable/ic_close" />
         </LinearLayout>
     </LinearLayout>
@@ -198,17 +210,26 @@
 
         <LinearLayout android:id="@+id/navHome" style="@style/NavItem">
             <ImageView style="@style/NavIcon" android:src="@drawable/ic_home" />
-            <TextView style="@style/NavLabel" android:text="Главная" />
+            <TextView style="@style/NavLabel" android:text="@string/tab_home" />
         </LinearLayout>
 
         <LinearLayout android:id="@+id/navSubs" style="@style/NavItem">
             <ImageView style="@style/NavIcon" android:src="@drawable/ic_subs" />
-            <TextView style="@style/NavLabel" android:text="Подписки" />
+            <TextView style="@style/NavLabel" android:text="@string/tab_subs" />
         </LinearLayout>
 
         <LinearLayout android:id="@+id/navHistory" style="@style/NavItem">
             <ImageView style="@style/NavIcon" android:src="@drawable/ic_history" />
-            <TextView style="@style/NavLabel" android:text="История" />
+            <TextView style="@style/NavLabel" android:text="@string/tab_history" />
         </LinearLayout>
     </LinearLayout>
 </LinearLayout>
+
+    <!-- Плеер: панель поверх всего, разворачивается и сворачивается в мини-плеер -->
+    <include
+        android:id="@+id/playerPanel"
+        layout="@layout/player_panel"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
+</FrameLayout>

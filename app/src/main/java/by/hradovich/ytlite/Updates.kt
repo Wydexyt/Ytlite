@@ -35,7 +35,7 @@ object Updates {
         fun fail(e: Throwable?) {
             e?.let { ErrorLog.log("Проверка обновлений", it) }
             if (force) act.runOnUiThread {
-                if (!act.isFinishing) AlertDialog.Builder(act).setMessage("Не удалось проверить обновления. Попробуйте позже.")
+                if (!act.isFinishing) AlertDialog.Builder(act).setMessage(R.string.update_check_failed)
                     .setPositiveButton("OK", null).show()
             }
         }
@@ -58,20 +58,20 @@ object Updates {
             act.runOnUiThread {
                 if (act.isFinishing) return@runOnUiThread
                 if (compare(latest, current) <= 0) {
-                    if (force) AlertDialog.Builder(act).setMessage("Установлена последняя версия (${BuildConfig.VERSION_NAME})")
+                    if (force) AlertDialog.Builder(act).setMessage(act.getString(R.string.update_latest, BuildConfig.VERSION_NAME))
                         .setPositiveButton("OK", null).show()
                     return@runOnUiThread
                 }
                 if (!force && p.getString("skippedTag", null) == tag) return@runOnUiThread
                 AlertDialog.Builder(act)
-                    .setTitle("Доступно обновление $tag")
-                    .setMessage(r.optString("body").substringBefore("\n---").trim().take(1500).ifEmpty { "Новая версия YT Lite" } +
-                        "\n\nСейчас установлена ${BuildConfig.VERSION_NAME}.")
-                    .setPositiveButton("Скачать") { _, _ ->
+                    .setTitle(act.getString(R.string.update_available, tag))
+                    .setMessage(r.optString("body").substringBefore("\n---").trim().take(1500).ifEmpty { act.getString(R.string.update_new) } +
+                        "\n\n" + act.getString(R.string.update_installed, BuildConfig.VERSION_NAME))
+                    .setPositiveButton(R.string.download) { _, _ ->
                         act.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
                     }
-                    .setNeutralButton("Пропустить") { _, _ -> p.edit().putString("skippedTag", tag).apply() }
-                    .setNegativeButton("Позже", null)
+                    .setNeutralButton(R.string.skip) { _, _ -> p.edit().putString("skippedTag", tag).apply() }
+                    .setNegativeButton(R.string.later, null)
                     .show()
             }
         }

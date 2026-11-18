@@ -1,9 +1,13 @@
 package by.hradovich.ytlite
 
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
+import android.content.res.Configuration
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -12,6 +16,7 @@ import android.text.TextWatcher
 import android.view.Menu
 import android.view.View
 import android.view.ViewGroup
+import android.view.animation.DecelerateInterpolator
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputMethodManager
 import android.widget.EditText
@@ -22,8 +27,13 @@ import android.widget.LinearLayout
 import android.widget.PopupMenu
 import android.widget.ProgressBar
 import android.widget.TextView
+import android.widget.Toast
+import androidx.annotation.OptIn
 import androidx.core.content.ContextCompat
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
+import androidx.media3.common.C
 import androidx.media3.common.Player
+import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import androidx.recyclerview.widget.LinearLayoutManager
@@ -32,14 +42,16 @@ import androidx.viewpager2.widget.ViewPager2
 import coil.load
 import com.google.common.util.concurrent.ListenableFuture
 
+/** Единственное окно приложения: ленты, поиск, страницы каналов, статистика и плеер-панель. */
+@OptIn(UnstableApi::class)
 class MainActivity : Activity() {
 
-    private class TabDef(val title: String, val browseId: String, val needsLogin: Boolean, val navId: Int)
+    private class TabDef(val title: Int, val browseId: String, val needsLogin: Boolean, val navId: Int)
 
     private val tabs = listOf(
-        TabDef("Главная", "FEwhat_to_watch", false, R.id.navHome),
-        TabDef("Подписки", "FEsubscriptions", true, R.id.navSubs),
-        TabDef("История", "FEhistory", true, R.id.navHistory),
+        TabDef(R.string.tab_home, "FEwhat_to_watch", false, R.id.navHome),
+        TabDef(R.string.tab_subs, "FEsubscriptions", true, R.id.navSubs),
+        TabDef(R.string.tab_history, "FEhistory", true, R.id.navHistory),
     )
 
     private lateinit var pager: ViewPager2
@@ -47,6 +59,11 @@ class MainActivity : Activity() {
     private lateinit var navItems: List<View>
     private lateinit var accountIcon: ImageView
     private var shownAccount: String? = null
+    private var firstFeedLoaded = false
+
+    // страницы поверх лент
+    private lateinit var pagesBox: FrameLayout
+    private val pages = ArrayList<Page>()
 
     // поиск
     private lateinit var header: View
@@ -62,15 +79,20 @@ class MainActivity : Activity() {
         onInsert = { query.setText("$it "); query.setSelection(query.text.length) },
         onRemove = { q ->
             AlertDialog.Builder(this)
-                .setMessage("Удалить «$q» из истории?")
-                .setPositiveButton("Удалить") { _, _ ->
+                .setMessage(getString(R.string.history_remove, q))
+                .setPositiveButton(R.string.remove) { _, _ ->
                     Prefs.removeHistory(q)
                     updateSuggestions()
                 }
-                .setNegativeButton("Отмена", null)
+                .setNegativeButton(R.string.cancel, null)
                 .show()
         },
     )
+
+    // плеер
+    private lateinit var panel: View
+    private lateinit var player: PlayerScreen
+    private var started = false
 
     // мини-плеер
     private lateinit var mini: View
@@ -92,15 +114,29 @@ class MainActivity : Activity() {
         override fun onEvents(player: Player, events: Player.Events) = updateMini()
     }
 
+    override fun attachBaseContext(base: Context) = super.attachBaseContext(Lang.wrap(base))
+
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Заставка с иконкой — пока не загрузится первая лента (не дольше 2 с)
+        val splash = installSplashScreen()
+        val splashStart = System.currentTimeMillis()
+        splash.setKeepOnScreenCondition { !firstFeedLoaded && System.currentTimeMillis() - splashStart < 2000 }
+
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        // Рисуем и в области выреза камеры — иначе в полноэкранном режиме видео смещено от центра
+        if (android.os.Build.VERSION.SDK_INT >= 28) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
         accountIcon = findViewById(R.id.account)
         header = findViewById(R.id.header)
         searchBar = findViewById(R.id.searchBar)
         searchContainer = findViewById(R.id.searchContainer)
         suggestions = findViewById(R.id.suggestions)
         query = findViewById(R.id.query)
+        pagesBox = findViewById(R.id.pages)
         mini = findViewById(R.id.mini)
         miniProgress = findViewById(R.id.miniProgress)
         miniTitle = findViewById(R.id.miniTitle)
@@ -108,10 +144,14 @@ class MainActivity : Activity() {
         miniThumb = findViewById(R.id.miniThumb)
         miniPlay = findViewById(R.id.miniPlay)
         pager = findViewById(R.id.pager)
+        panel = findViewById(R.id.playerPanel)
+        player = PlayerScreen(this, panel)
 
         // Вкладки: каждая — отдельная лента, живут все три (кэш и позиция сохраняются)
         feeds = tabs.map { t ->
-            Feed(this, t.title, pager, ::openVideo, t.needsLogin, "browse") { InnerTube.browse(t.browseId) }
+            Feed(this, getString(t.title), pager, { openVideo(it.id, it.title) }, t.needsLogin, "browse") {
+                InnerTube.browse(t.browseId)
+            }
         }
         pager.offscreenPageLimit = feeds.size
         pager.adapter = object : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
@@ -135,13 +175,16 @@ class MainActivity : Activity() {
         navItems = tabs.map { findViewById(it.navId) }
         navItems.forEachIndexed { i, v ->
             v.setOnClickListener {
+                closeAllPages()
                 if (searchContainer.visibility == View.VISIBLE) exitSearch()
                 if (pager.currentItem == i) feeds[i].scrollTop() else pager.setCurrentItem(i, false)
             }
         }
 
         // Поиск
-        searchFeed = Feed(this, "Поиск", searchContainer, ::openVideo, false, "search") { InnerTube.search(searchQuery) }
+        searchFeed = Feed(this, getString(R.string.search), searchContainer, { openVideo(it.id, it.title) }, false, "search") {
+            InnerTube.search(searchQuery)
+        }
         searchContainer.addView(searchFeed.root, 0)
         suggestions.layoutManager = LinearLayoutManager(this)
         suggestions.adapter = suggestAdapter
@@ -169,7 +212,7 @@ class MainActivity : Activity() {
 
         accountIcon.setOnClickListener { showAccountMenu() }
 
-        mini.setOnClickListener { startActivity(Intent(this, PlayerActivity::class.java)) }
+        mini.setOnClickListener { expandPlayer() }
         miniPlay.setOnClickListener { controller?.let { if (it.isPlaying) it.pause() else it.play() } }
         findViewById<View>(R.id.miniClose).setOnClickListener {
             controller?.run { stop(); clearMediaItems() }
@@ -179,36 +222,74 @@ class MainActivity : Activity() {
         shownAccount = Auth.active?.id
         navItems.forEachIndexed { i, v -> v.alpha = if (i == 0) 1f else 0.55f }
         // Сначала Главная, сразу после неё — остальные вкладки (только списки, превью — по мере показа)
-        feeds[0].onFirstLoad = { feeds.drop(1).forEach { if (!it.loaded) it.load() } }
+        feeds[0].onFirstLoad = {
+            firstFeedLoaded = true
+            feeds.drop(1).forEach { if (!it.loaded) it.load() }
+        }
         feeds[0].load()
         Updates.check(this)
+        handleIntent(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleIntent(intent)
+    }
+
+    /** Видео из ссылки (ACTION_VIEW), «Поделиться» (ACTION_SEND) или уведомления плеера. */
+    private fun handleIntent(i: Intent?) {
+        i ?: return
+        val link = when (i.action) {
+            Intent.ACTION_VIEW -> Links.parse(i.data)
+            Intent.ACTION_SEND -> Links.parseText(i.getStringExtra(Intent.EXTRA_TEXT))
+            else -> null
+        }
+        when {
+            link != null -> openVideo(link.first, null, link.second)
+            i.action == Intent.ACTION_VIEW || i.action == Intent.ACTION_SEND ->
+                Toast.makeText(this, R.string.link_unsupported, Toast.LENGTH_SHORT).show()
+            i.getBooleanExtra(EXTRA_EXPAND, false) -> expandPlayer()
+        }
+        setIntent(Intent(this, MainActivity::class.java))
     }
 
     override fun onStart() {
         super.onStart()
+        started = true
         val f = MediaController.Builder(this, SessionToken(this, ComponentName(this, PlaybackService::class.java))).buildAsync()
         future = f
         f.addListener({
             val c = runCatching { f.get() }.getOrNull() ?: return@addListener
             controller = c
             c.addListener(playerListener)
+            player.attach(c)
+            updateVideoTrack()
             updateMini()
         }, ContextCompat.getMainExecutor(this))
     }
 
     override fun onStop() {
+        started = false
+        updateVideoTrack() // окно скрыто — дальше только звук
         ui.removeCallbacks(tick)
         controller?.removeListener(playerListener)
+        player.detach()
         future?.let { MediaController.releaseFuture(it) }
         future = null
         controller = null
         super.onStop()
     }
 
+    override fun onDestroy() {
+        player.release()
+        super.onDestroy()
+    }
+
     override fun onResume() {
         super.onResume()
         feeds.forEach { it.refreshProgress() } // полоски «просмотрено»
         searchFeed.refreshProgress()
+        pages.lastOrNull()?.onResume()
         updateAccountIcon()
         if (Auth.active?.id != shownAccount) accountChanged()
         val acc = Auth.active
@@ -221,27 +302,118 @@ class MainActivity : Activity() {
         }
     }
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        player.onConfigurationChanged()
+    }
+
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         when {
-            searchContainer.visibility != View.VISIBLE -> super.onBackPressed()
-            suggestions.visibility == View.VISIBLE && searchFeed.loaded -> hideSuggestions()
-            else -> exitSearch()
+            player.expanded -> if (!player.onBack()) collapsePlayer()
+            pages.isNotEmpty() -> if (!pages.last().onBack()) closePage(pages.last())
+            searchContainer.visibility == View.VISIBLE ->
+                if (suggestions.visibility == View.VISIBLE && searchFeed.loaded) hideSuggestions() else exitSearch()
+            else -> super.onBackPressed()
         }
     }
 
-    private fun openVideo(v: Video) {
-        Streams.prefetch(v.id) // потоки начинают готовиться ещё до открытия плеера
-        startActivity(
-            Intent(this, PlayerActivity::class.java)
-                .putExtra(PlayerActivity.EXTRA_ID, v.id)
-                .putExtra(PlayerActivity.EXTRA_TITLE, v.title)
-        )
+    // ---------- плеер-панель ----------
+
+    fun openVideo(id: String, title: String?, start: Long = 0) {
+        player.open(id, title, start)
+        expandPlayer()
+    }
+
+    /** Видео показывается только в развёрнутом плеере при открытом окне; иначе — только звук. */
+    private fun updateVideoTrack() {
+        val c = controller ?: return
+        val video = started && player.expanded && !PlaybackService.audioOnly
+        if (c.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_VIDEO) == !video) return
+        c.trackSelectionParameters = c.trackSelectionParameters.buildUpon()
+            .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, !video)
+            .build()
+    }
+
+    fun onAudioOnlyChanged() = updateVideoTrack()
+
+    fun expandPlayer() {
+        if (player.expanded && panel.translationY == 0f) return
+        hideKeyboard()
+        panel.visibility = View.VISIBLE
+        panel.animate().cancel()
+        if (!player.expanded) panel.translationY = (panel.height.takeIf { it > 0 } ?: resources.displayMetrics.heightPixels).toFloat()
+        player.setExpanded(true)
+        updateVideoTrack()
+        panel.animate().translationY(0f).alpha(1f).setDuration(260).setInterpolator(DecelerateInterpolator(2f))
+            .setListener(null)
+        updateMini()
+    }
+
+    fun collapsePlayer() {
+        if (!player.expanded) return
+        player.prepareCollapse()
+        panel.animate().cancel()
+        panel.animate().translationY(panel.height.toFloat()).setDuration(220).setInterpolator(DecelerateInterpolator(1.5f))
+            .setListener(object : AnimatorListenerAdapter() {
+                override fun onAnimationEnd(animation: Animator) {
+                    panel.animate().setListener(null)
+                    panel.visibility = View.GONE
+                    panel.alpha = 1f
+                }
+            })
+        player.setExpanded(false)
+        updateVideoTrack()
+        updateMini()
+    }
+
+    /** Свайп вниз по видео: панель тянется за пальцем. */
+    fun dragPlayer(dy: Float) {
+        val d = dy.coerceAtLeast(0f)
+        panel.translationY = d
+        panel.alpha = 1f - (d / panel.height.coerceAtLeast(1)).coerceIn(0f, 0.5f)
+        if (mini.visibility != View.VISIBLE && controller?.currentMediaItem != null) mini.visibility = View.VISIBLE
+    }
+
+    fun dragPlayerEnd(dy: Float) {
+        if (dy > panel.height * 0.18f) collapsePlayer()
+        else {
+            panel.animate().translationY(0f).alpha(1f).setDuration(160).setListener(null)
+            updateMini()
+        }
+    }
+
+    // ---------- страницы: канал, статистика ----------
+
+    fun openChannel(id: String) {
+        if (player.expanded) collapsePlayer()
+        openPage(ChannelPage(this, pagesBox, id))
+    }
+
+    fun openStats() = openPage(StatsPage(this, pagesBox))
+
+    private fun openPage(p: Page) {
+        pages += p
+        pagesBox.addView(p.view)
+        p.view.translationX = resources.displayMetrics.widthPixels.toFloat()
+        p.view.animate().translationX(0f).setDuration(220).setInterpolator(DecelerateInterpolator(2f))
+    }
+
+    fun closePage(p: Page) {
+        pages.remove(p)
+        p.view.animate().translationX(p.view.width.toFloat()).setDuration(200)
+            .withEndAction { pagesBox.removeView(p.view) }
+    }
+
+    private fun closeAllPages() {
+        pages.forEach { pagesBox.removeView(it.view) }
+        pages.clear()
     }
 
     // ---------- поиск ----------
 
     private fun enterSearch() {
+        closeAllPages()
         header.visibility = View.GONE
         searchBar.visibility = View.VISIBLE
         searchContainer.visibility = View.VISIBLE
@@ -303,7 +475,7 @@ class MainActivity : Activity() {
         }, 200)
     }
 
-    // ---------- аккаунты ----------
+    // ---------- аккаунты и меню ----------
 
     private fun updateAccountIcon() {
         val acc = Auth.active
@@ -324,31 +496,35 @@ class MainActivity : Activity() {
         val accounts = Auth.accounts
         val active = Auth.active?.id
         accounts.forEachIndexed { i, a ->
-            val title = (if (a.id == active) "✓ " else "    ") + a.name.ifEmpty { "Аккаунт ${i + 1}" }
+            val title = (if (a.id == active) "✓ " else "    ") + a.name.ifEmpty { getString(R.string.account_n, i + 1) }
             menu.menu.add(0, i, i, title)
         }
-        menu.menu.add(1, ADD, 100, "Добавить аккаунт")
-        if (active != null) menu.menu.add(1, LOGOUT, 101, "Выйти")
-        menu.menu.add(2, QUALITY_WIFI, 102, "Качество (Wi-Fi): ${qualityName(Prefs.qualityWifi)}")
-        menu.menu.add(2, QUALITY_MOBILE, 103, "Качество (моб. сеть): ${qualityName(Prefs.qualityMobile)}")
-        menu.menu.add(2, SPONSOR, 104, "SponsorBlock…")
-        menu.menu.add(3, LOG, 105, "Журнал ошибок")
-        menu.menu.add(3, UPDATE, 106, "Проверить обновления (${BuildConfig.VERSION_NAME})")
+        menu.menu.add(1, ADD, 100, R.string.add_account)
+        if (active != null) menu.menu.add(1, LOGOUT, 101, R.string.logout)
+        menu.menu.add(2, STATS, 102, R.string.stats)
+        menu.menu.add(2, QUALITY_WIFI, 103, getString(R.string.quality_wifi, qualityName(Prefs.qualityWifi)))
+        menu.menu.add(2, QUALITY_MOBILE, 104, getString(R.string.quality_mobile, qualityName(Prefs.qualityMobile)))
+        menu.menu.add(2, SPONSOR, 105, R.string.sponsorblock_menu)
+        menu.menu.add(2, LANGUAGE, 106, getString(R.string.language_menu, languageName(Prefs.language)))
+        menu.menu.add(3, LOG, 107, R.string.error_log)
+        menu.menu.add(3, UPDATE, 108, getString(R.string.check_updates, BuildConfig.VERSION_NAME))
         menu.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 ADD -> startActivity(Intent(this, LoginActivity::class.java))
                 LOGOUT -> AlertDialog.Builder(this)
-                    .setMessage("Выйти из аккаунта ${Auth.active?.name.orEmpty()}?")
-                    .setPositiveButton("Выйти") { _, _ ->
+                    .setMessage(getString(R.string.logout_confirm, Auth.active?.name.orEmpty()))
+                    .setPositiveButton(R.string.logout) { _, _ ->
                         Auth.logout()
                         updateAccountIcon()
                         accountChanged()
                     }
-                    .setNegativeButton("Отмена", null)
+                    .setNegativeButton(R.string.cancel, null)
                     .show()
+                STATS -> openStats()
                 QUALITY_WIFI -> chooseQuality(true)
                 QUALITY_MOBILE -> chooseQuality(false)
                 SPONSOR -> showSponsorSettings()
+                LANGUAGE -> chooseLanguage()
                 UPDATE -> Updates.check(this, force = true)
                 LOG -> showErrorLog()
                 else -> accounts.getOrNull(item.itemId)?.let {
@@ -364,6 +540,29 @@ class MainActivity : Activity() {
         menu.show()
     }
 
+    private fun languageName(l: String) = getString(
+        when (l) {
+            "ru" -> R.string.lang_ru
+            "en" -> R.string.lang_en
+            else -> R.string.lang_system
+        }
+    )
+
+    private fun chooseLanguage() {
+        val values = arrayOf("system", "ru", "en")
+        AlertDialog.Builder(this)
+            .setTitle(R.string.language)
+            .setSingleChoiceItems(values.map { languageName(it) }.toTypedArray(), values.indexOf(Prefs.language)) { d, i ->
+                d.dismiss()
+                if (values[i] != Prefs.language) {
+                    Prefs.language = values[i]
+                    Lang.changed(this)
+                    recreate()
+                }
+            }
+            .show()
+    }
+
     /** Настройки SponsorBlock: общий переключатель и категории. */
     private fun showSponsorSettings() {
         val pad = (20 * resources.displayMetrics.density).toInt()
@@ -372,14 +571,14 @@ class MainActivity : Activity() {
             setPadding(pad, pad / 2, pad, 0)
         }
         val main = android.widget.Switch(this).apply {
-            text = "Пропускать автоматически"
+            text = getString(R.string.sb_auto)
             textSize = 16f
             isChecked = Prefs.sponsorBlock
             setPadding(0, pad / 2, 0, pad / 2)
         }
         box.addView(main)
         box.addView(TextView(this).apply {
-            text = "Что пропускать"
+            text = getString(R.string.sb_what)
             setTextColor(getColor(R.color.sub))
             textSize = 13f
             setPadding(0, pad / 2, 0, pad / 4)
@@ -387,7 +586,7 @@ class MainActivity : Activity() {
         val selected = Prefs.sponsorCategories.toMutableSet()
         val checks = SponsorBlock.CATEGORIES.map { (key, label) ->
             android.widget.CheckBox(this).apply {
-                text = label
+                text = getString(label)
                 isChecked = key in selected
                 isEnabled = main.isChecked
                 setOnCheckedChangeListener { _, c -> if (c) selected += key else selected -= key }
@@ -396,7 +595,7 @@ class MainActivity : Activity() {
         }
         main.setOnCheckedChangeListener { _, c -> checks.forEach { it.isEnabled = c } }
         box.addView(TextView(this).apply {
-            text = "Данные — сообщество SponsorBlock (sponsor.ajay.app)"
+            text = getString(R.string.sb_credit)
             setTextColor(getColor(R.color.sub))
             textSize = 11f
             setPadding(0, pad / 2, 0, pad / 2)
@@ -404,11 +603,11 @@ class MainActivity : Activity() {
         AlertDialog.Builder(this)
             .setTitle("SponsorBlock")
             .setView(android.widget.ScrollView(this).apply { addView(box) })
-            .setPositiveButton("Сохранить") { _, _ ->
+            .setPositiveButton(R.string.save) { _, _ ->
                 Prefs.sponsorBlock = main.isChecked
                 Prefs.sponsorCategories = selected
             }
-            .setNegativeButton("Отмена", null)
+            .setNegativeButton(R.string.cancel, null)
             .show()
     }
 
@@ -416,22 +615,22 @@ class MainActivity : Activity() {
         val text = ErrorLog.read()
         val pad = (16 * resources.displayMetrics.density).toInt()
         val body = TextView(this).apply {
-            this.text = text.ifEmpty { "Ошибок нет" }
+            this.text = text.ifEmpty { getString(R.string.no_errors) }
             textSize = 11f
             typeface = android.graphics.Typeface.MONOSPACE
             setTextIsSelectable(true)
             setPadding(pad, pad, pad, pad)
         }
         AlertDialog.Builder(this)
-            .setTitle("Журнал ошибок")
+            .setTitle(R.string.error_log)
             .setView(android.widget.ScrollView(this).apply { addView(body) })
-            .setPositiveButton("Скопировать всё") { _, _ ->
+            .setPositiveButton(R.string.copy_all) { _, _ ->
                 getSystemService(android.content.ClipboardManager::class.java)
                     .setPrimaryClip(android.content.ClipData.newPlainText("YT Lite errors", ErrorLog.export()))
-                android.widget.Toast.makeText(this, "Журнал скопирован", android.widget.Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, R.string.log_copied, Toast.LENGTH_SHORT).show()
             }
-            .setNeutralButton("Очистить") { _, _ -> ErrorLog.clear() }
-            .setNegativeButton("Закрыть", null)
+            .setNeutralButton(R.string.clear) { _, _ -> ErrorLog.clear() }
+            .setNegativeButton(R.string.close, null)
             .show()
     }
 
@@ -440,7 +639,7 @@ class MainActivity : Activity() {
         val names = values.map { qualityName(it) }.toTypedArray()
         val cur = if (wifi) Prefs.qualityWifi else Prefs.qualityMobile
         AlertDialog.Builder(this)
-            .setTitle(if (wifi) "Качество по Wi-Fi" else "Качество в мобильной сети")
+            .setTitle(if (wifi) R.string.quality_wifi_title else R.string.quality_mobile_title)
             .setSingleChoiceItems(names, values.indexOf(cur)) { d, i ->
                 if (wifi) Prefs.qualityWifi = values[i] else Prefs.qualityMobile = values[i]
                 d.dismiss()
@@ -448,15 +647,15 @@ class MainActivity : Activity() {
             .show()
     }
 
-    private fun qualityName(q: Int) = if (q == 0) "максимальное" else "${q}p"
+    private fun qualityName(q: Int) = if (q == 0) getString(R.string.quality_max) else "${q}p"
 
     // ---------- мини-плеер ----------
 
     private fun updateMini() {
         val c = controller
         val item = c?.currentMediaItem
-        if (c == null || item == null || c.playbackState == Player.STATE_IDLE) {
-            mini.visibility = View.GONE
+        if (c == null || item == null || c.playbackState == Player.STATE_IDLE || (player.expanded && panel.translationY == 0f)) {
+            if (!(player.expanded && panel.translationY > 0f)) mini.visibility = View.GONE
             ui.removeCallbacks(tick)
             return
         }
@@ -481,6 +680,7 @@ class MainActivity : Activity() {
     }
 
     companion object {
+        const val EXTRA_EXPAND = "expand"
         private const val ADD = Menu.FIRST + 1000
         private const val LOGOUT = Menu.FIRST + 1001
         private const val QUALITY_WIFI = Menu.FIRST + 1002
@@ -488,5 +688,12 @@ class MainActivity : Activity() {
         private const val SPONSOR = Menu.FIRST + 1004
         private const val UPDATE = Menu.FIRST + 1005
         private const val LOG = Menu.FIRST + 1006
+        private const val STATS = Menu.FIRST + 1007
+        private const val LANGUAGE = Menu.FIRST + 1008
     }
+}
+
+/** Открыть канал из любого места интерфейса. */
+fun Context.openChannel(id: String) {
+    (this as? MainActivity)?.openChannel(id)
 }

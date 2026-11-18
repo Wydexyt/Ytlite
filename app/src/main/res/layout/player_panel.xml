@@ -1,10 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:id="@+id/playerRoot"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@color/bg"
+    android:clickable="true">
+
+<LinearLayout
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
     android:orientation="vertical">
+
 
     <FrameLayout
         android:id="@+id/playerBox"
@@ -24,7 +30,7 @@
             android:layout_gravity="top|end"
             android:layout_margin="4dp"
             android:background="?android:attr/selectableItemBackgroundBorderless"
-            android:contentDescription="Настройки"
+            android:contentDescription="@string/settings"
             android:src="@drawable/ic_settings"
             android:visibility="gone" />
 
@@ -36,7 +42,7 @@
             android:layout_marginTop="4dp"
             android:layout_marginEnd="52dp"
             android:background="?android:attr/selectableItemBackgroundBorderless"
-            android:contentDescription="Только звук"
+            android:contentDescription="@string/audio_only"
             android:src="@drawable/ic_headphones"
             android:visibility="gone" />
 
@@ -99,7 +105,7 @@
                     android:layout_width="44dp"
                     android:layout_height="44dp"
                     android:background="?android:attr/selectableItemBackgroundBorderless"
-                    android:contentDescription="Назад"
+                    android:contentDescription="@string/back"
                     android:src="@drawable/ic_back"
                     android:visibility="gone" />
 
@@ -118,7 +124,7 @@
                     android:layout_width="48dp"
                     android:layout_height="48dp"
                     android:background="?android:attr/selectableItemBackgroundBorderless"
-                    android:contentDescription="Закрыть"
+                    android:contentDescription="@string/close"
                     android:src="@drawable/ic_close" />
             </LinearLayout>
 
@@ -131,8 +137,8 @@
                 android:paddingBottom="8dp"
                 android:visibility="gone">
 
-                <TextView android:id="@+id/sortTop" style="@style/Chip" android:text="Популярные" />
-                <TextView android:id="@+id/sortNew" style="@style/Chip" android:text="Новые" />
+                <TextView android:id="@+id/sortTop" style="@style/Chip" android:text="@string/sort_top" />
+                <TextView android:id="@+id/sortNew" style="@style/Chip" android:text="@string/sort_new" />
             </LinearLayout>
 
             <View
@@ -248,9 +254,50 @@
                     android:layout_width="48dp"
                     android:layout_height="48dp"
                     android:background="?android:attr/selectableItemBackgroundBorderless"
-                    android:contentDescription="Отправить"
+                    android:contentDescription="@string/send"
                     android:src="@drawable/ic_send" />
             </LinearLayout>
         </LinearLayout>
     </FrameLayout>
 </LinearLayout>
+
+    <!-- Запасной веб-плеер YouTube (видео 18+) -->
+    <LinearLayout
+        android:id="@+id/webBox"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@color/bg"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="48dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="16dp">
+
+            <TextView
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="@string/web_player"
+                android:textColor="@color/sub"
+                android:textSize="13sp" />
+
+            <ImageButton
+                android:id="@+id/webClose"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:background="?android:attr/selectableItemBackgroundBorderless"
+                android:contentDescription="@string/close"
+                android:src="@drawable/ic_close" />
+        </LinearLayout>
+
+        <FrameLayout
+            android:id="@+id/webHolder"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1" />
+    </LinearLayout>
+</FrameLayout>

@@ -85,15 +85,13 @@ class Feed(
         continuation = null
         message.visibility = View.GONE
         if (needsLogin && !Auth.loggedIn) {
+            progress.visibility = View.GONE
             adapter.submit(emptyList())
             loaded = true
-            showMessage("Войдите в аккаунт")
+            showMessage(act.getString(R.string.sign_in_needed))
             return
         }
-        if (!pull) {
-            adapter.submit(emptyList())
-            progress.visibility = View.VISIBLE
-        }
+        if (!pull) adapter.showSkeleton()
         loading = true
         Net.io.execute {
             val r = runCatching { loader() }
@@ -108,10 +106,10 @@ class Feed(
                     adapter.submit(it.items)
                     continuation = it.continuation
                     list.scrollToPosition(0)
-                    if (it.items.isEmpty()) showMessage("Здесь пусто")
+                    if (it.items.isEmpty()) showMessage(act.getString(R.string.empty))
                 }.onFailure {
                     ErrorLog.log("Лента: $name", it)
-                    showMessage("Ошибка: ${it.message}")
+                    showMessage(act.getString(R.string.error_with, it.message))
                 }
             }
         }

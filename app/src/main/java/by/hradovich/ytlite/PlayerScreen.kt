@@ -47,7 +47,7 @@ import androidx.recyclerview.widget.RecyclerView
 import com.google.common.util.concurrent.ListenableFuture
 
 @OptIn(UnstableApi::class)
-class PlayerActivity : Activity() {
+class PlayerScreen(private val act: MainActivity, val root: View) {
 
     private lateinit var playerBox: FrameLayout
     private lateinit var view: PlayerView
@@ -73,7 +73,6 @@ class PlayerActivity : Activity() {
     private var detailsFor: String? = null
     private var current: Details? = null
 
-    private var future: ListenableFuture<MediaController>? = null
     private var controller: MediaController? = null
 
     /** Видео, которое надо открыть, когда подключимся к сервису: id и позиция старта. */
@@ -93,15 +92,14 @@ class PlayerActivity : Activity() {
         }
     }
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
-        setContentView(R.layout.activity_player)
-        playerBox = findViewById(R.id.playerBox)
-        view = findViewById(R.id.playerView)
-        settings = findViewById(R.id.settings)
-        audioBtn = findViewById(R.id.audioOnly)
-        chapterView = findViewById(R.id.chapter)
-        details = findViewById(R.id.details)
+    /** Настройка экрана; вызывается из init в конце класса — после инициализации всех полей. */
+    private fun setup() {
+        playerBox = root.findViewById(R.id.playerBox)
+        view = root.findViewById(R.id.playerView)
+        settings = root.findViewById(R.id.settings)
+        audioBtn = root.findViewById(R.id.audioOnly)
+        chapterView = root.findViewById(R.id.chapter)
+        details = root.findViewById(R.id.details)
 
         view.setShowNextButton(false)
         view.setShowPreviousButton(false)
@@ -126,7 +124,7 @@ class PlayerActivity : Activity() {
         updateAudioBtn()
         hideBuiltInSettings()
 
-        overlay = TapOverlay(this) {
+        overlay = TapOverlay(act) {
             if (view.isControllerFullyVisible) view.hideController() else view.showController()
         }
         view.overlayFrameLayout?.addView(
@@ -137,18 +135,12 @@ class PlayerActivity : Activity() {
             if (isLandscape) {
                 view.resizeMode = if (fill) androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
                 else androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
-                overlay.showInfo(if (fill) "Заполнить экран" else "Исходный размер")
-            }
-        }
-        // Рисуем и в области выреза камеры — иначе в альбомной ориентации видео смещено от центра
-        if (android.os.Build.VERSION.SDK_INT >= 28) {
-            window.attributes = window.attributes.apply {
-                layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+                overlay.showInfo(act.getString(if (fill) R.string.zoom_fill else R.string.zoom_fit))
             }
         }
         settings.setOnClickListener { showSettings() }
 
-        val lm = LinearLayoutManager(this)
+        val lm = LinearLayoutManager(act)
         details.layoutManager = lm
         details.adapter = ConcatAdapter(header, related)
         details.addOnScrollListener(object : RecyclerView.OnScrollListener() {
@@ -158,71 +150,60 @@ class PlayerActivity : Activity() {
         })
 
         setupPanel()
-        readIntent(intent)
         applyLayout()
     }
 
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        setIntent(intent)
-        readIntent(intent)
-        controller?.let { open(it) }
+    // ---------- связь с плеером ----------
+
+    /** Плеер развёрнут на экране: показываем видео. */
+    var expanded = false
+        private set
+
+    fun attach(c: MediaController) {
+        controller = c
+        c.addListener(playerListener)
+        if (expanded) bindView()
+        if (!openPending()) c.currentMediaItem?.mediaId?.let { loadDetails(it) }
     }
 
-    /** Видео из списка, из ссылки (ACTION_VIEW) или из «Поделиться» (ACTION_SEND). */
-    private fun readIntent(i: Intent) {
-        val p = when {
-            i.getStringExtra(EXTRA_ID) != null -> i.getStringExtra(EXTRA_ID)!! to i.getLongExtra(EXTRA_START, 0)
-            i.action == Intent.ACTION_VIEW -> Links.parse(i.data)
-            i.action == Intent.ACTION_SEND -> Links.parseText(i.getStringExtra(Intent.EXTRA_TEXT))
-            else -> null
-        }
-        if (p == null && (i.action == Intent.ACTION_VIEW || i.action == Intent.ACTION_SEND)) {
-            Toast.makeText(this, "Эта ссылка не поддерживается", Toast.LENGTH_SHORT).show()
-            if (controller?.currentMediaItem == null) finish()
-        }
-        pendingTitle = i.getStringExtra(EXTRA_TITLE)
-        pending = p
-        p?.let { Streams.prefetch(it.first) }
-        setIntent(Intent(this, PlayerActivity::class.java))
-    }
-
-    override fun onStart() {
-        super.onStart()
-        val token = SessionToken(this, ComponentName(this, PlaybackService::class.java))
-        val f = MediaController.Builder(this, token)
-            .setConnectionHints(bundleOf(PlaybackService.HINT_VIDEO to true)) // сервис включит видео
-            .buildAsync()
-        future = f
-        f.addListener({
-            val c = runCatching { f.get() }.getOrNull() ?: return@addListener
-            controller = c
-            c.addListener(playerListener)
-            view.keepScreenOn = c.isPlaying
-            view.player = c
-            overlay.player = c
-            if (!open(c)) c.currentMediaItem?.mediaId?.let { loadDetails(it) }
-        }, ContextCompat.getMainExecutor(this))
-    }
-
-    override fun onStop() {
+    fun detach() {
         controller?.removeListener(playerListener)
         view.player = null
         overlay.player = null
-        future?.let { MediaController.releaseFuture(it) } // сервис отключит видео, звук продолжится
-        future = null
         controller = null
-        super.onStop()
     }
 
-    override fun onDestroy() {
-        ticker.removeCallbacks(chapterTick)
-        orientationListener.disable()
-        super.onDestroy()
+    fun setExpanded(e: Boolean) {
+        expanded = e
+        if (e) bindView() else {
+            closeWeb()
+            view.player = null
+            overlay.player = null
+            view.keepScreenOn = false
+            closePanel(animate = false)
+        }
+        applyLayout()
     }
 
-    /** Открыть ожидающее видео. true — если было что открывать. */
-    private fun open(c: MediaController): Boolean {
+    private fun bindView() {
+        val c = controller ?: return
+        view.player = c
+        overlay.player = c
+        view.keepScreenOn = c.isPlaying
+    }
+
+    /** Открыть видео (из ленты, ссылки, рекомендаций). */
+    fun open(id: String, title: String?, start: Long = 0) {
+        Streams.prefetch(id)
+        pending = id to start
+        pendingTitle = title
+        openPending()
+        checkAgeGate(id)
+    }
+
+    /** Открыть ожидающее видео, если плеер подключён. true — если было что открывать. */
+    private fun openPending(): Boolean {
+        val c = controller ?: return false
         val (id, start) = pending ?: return false
         val title = pendingTitle
         pending = null
@@ -247,12 +228,73 @@ class PlayerActivity : Activity() {
         return true
     }
 
+    // ---------- запасной веб-плеер для видео 18+ ----------
+
+    private var web: android.webkit.WebView? = null
+
+    /** Если наш плеер не может получить видео 18+, открываем его в веб-плеере YouTube с входом в аккаунт. */
+    private fun checkAgeGate(id: String) {
+        closeWeb()
+        if (!Auth.loggedIn) return
+        Net.io.execute {
+            val e = runCatching { Streams.get(id) }.exceptionOrNull()
+            if (e is AgeGateException) act.runOnUiThread { if (detailsFor == id && expanded) showWeb(id) }
+        }
+    }
+
+    @android.annotation.SuppressLint("SetJavaScriptEnabled")
+    private fun showWeb(id: String) {
+        val cm = android.webkit.CookieManager.getInstance()
+        cm.setAcceptCookie(true)
+        // cookie активного аккаунта — чтобы YouTube пустил к видео 18+
+        Auth.active?.cookies?.split(';')?.forEach { c ->
+            val kv = c.trim()
+            if ('=' in kv) cm.setCookie("https://www.youtube.com", "$kv; Domain=.youtube.com; Path=/; Secure")
+        }
+        cm.flush()
+        val w = android.webkit.WebView(act).apply {
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            settings.mediaPlaybackRequiresUserGesture = false
+            settings.userAgentString = settings.userAgentString.replace("; wv", "")
+            if (androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
+                androidx.webkit.WebSettingsCompat.setRequestedWithHeaderOriginAllowList(settings, emptySet())
+            }
+            webViewClient = android.webkit.WebViewClient()
+            webChromeClient = android.webkit.WebChromeClient()
+        }
+        cm.setAcceptThirdPartyCookies(w, true)
+        val holder = root.findViewById<FrameLayout>(R.id.webHolder)
+        holder.removeAllViews()
+        holder.addView(w, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+        web = w
+        root.findViewById<View>(R.id.webBox).visibility = View.VISIBLE
+        root.findViewById<View>(R.id.webClose).setOnClickListener {
+            closeWeb()
+            act.collapsePlayer()
+        }
+        w.loadUrl("https://m.youtube.com/watch?v=$id")
+    }
+
+    /** Веб-плеер в фоне не работает — закрываем при сворачивании или другом видео. */
+    private fun closeWeb() {
+        val w = web ?: return
+        web = null
+        root.findViewById<FrameLayout>(R.id.webHolder).removeAllViews()
+        w.loadUrl("about:blank")
+        w.destroy()
+        root.findViewById<View>(R.id.webBox).visibility = View.GONE
+    }
+
+    fun release() {
+        closeWeb()
+        ticker.removeCallbacks(chapterTick)
+        orientationListener.disable()
+    }
+
     private fun openRelated(v: Video) {
-        Streams.prefetch(v.id)
         details.scrollToPosition(0)
-        pending = v.id to 0L
-        pendingTitle = v.title
-        controller?.let { open(it) }
+        open(v.id, v.title)
     }
 
     private fun seekTo(ms: Long) {
@@ -269,14 +311,14 @@ class PlayerActivity : Activity() {
         val title = current?.title
         val pos = controller?.takeIf { it.currentMediaItem?.mediaId == id }?.currentPosition ?: 0
         if (pos < 5_000) {
-            Share.video(this, id, title)
+            Share.video(act, id, title)
             return
         }
         val s = pos / 1000
         val t = if (s >= 3600) "%d:%02d:%02d".format(s / 3600, s / 60 % 60, s % 60) else "%d:%02d".format(s / 60, s % 60)
-        AlertDialog.Builder(this)
-            .setItems(arrayOf("Ссылка на видео", "С текущего момента ($t)")) { _, which ->
-                Share.video(this, id, title, if (which == 1) pos else 0)
+        AlertDialog.Builder(act)
+            .setItems(arrayOf(act.getString(R.string.share_link), act.getString(R.string.share_from, t))) { _, which ->
+                Share.video(act, id, title, if (which == 1) pos else 0)
             }
             .show()
     }
@@ -286,7 +328,7 @@ class PlayerActivity : Activity() {
     private fun rate(status: String) {
         val id = detailsFor ?: return
         if (!Auth.loggedIn) {
-            Toast.makeText(this, "Войдите в аккаунт", Toast.LENGTH_SHORT).show()
+            Toast.makeText(act, R.string.sign_in_needed, Toast.LENGTH_SHORT).show()
             return
         }
         val old = likeStatus
@@ -294,12 +336,12 @@ class PlayerActivity : Activity() {
         header.notifyItemChanged(0)
         Net.io.execute {
             val ok = runCatching { InnerTube.rate(id, status) }.onFailure { ErrorLog.log("Оценка $status", it) }.isSuccess
-            if (!ok) runOnUiThread {
+            if (!ok) act.runOnUiThread {
                 if (detailsFor == id) {
                     likeStatus = old
                     header.notifyItemChanged(0)
                 }
-                Toast.makeText(this, "Не получилось, попробуйте ещё раз", Toast.LENGTH_SHORT).show()
+                Toast.makeText(act, R.string.try_again, Toast.LENGTH_SHORT).show()
             }
         }
     }
@@ -324,20 +366,13 @@ class PlayerActivity : Activity() {
 
     private fun toggleAudioOnly() {
         PlaybackService.audioOnly = !PlaybackService.audioOnly
-        controller?.let {
-            it.trackSelectionParameters = it.trackSelectionParameters.buildUpon()
-                .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, PlaybackService.audioOnly)
-                .build()
-        }
+        act.onAudioOnlyChanged()
         updateAudioBtn()
-        Toast.makeText(
-            this, if (PlaybackService.audioOnly) "Только звук: видео не загружается" else "Видео включено",
-            Toast.LENGTH_SHORT
-        ).show()
+        Toast.makeText(act, if (PlaybackService.audioOnly) R.string.audio_only_on else R.string.audio_only_off, Toast.LENGTH_SHORT).show()
     }
 
     private fun updateAudioBtn() {
-        audioBtn.setColorFilter(if (PlaybackService.audioOnly) getColor(R.color.link) else 0xFFFFFFFF.toInt())
+        audioBtn.setColorFilter(if (PlaybackService.audioOnly) act.getColor(R.color.link) else 0xFFFFFFFF.toInt())
     }
 
     // ---------- вертикальные жесты ----------
@@ -350,27 +385,23 @@ class PlayerActivity : Activity() {
         override fun onDragStart(startXFraction: Float) {
             dragStartX = startXFraction
             if (isLandscape) {
-                val b = window.attributes.screenBrightness
+                val b = act.window.attributes.screenBrightness
                 startBrightness = if (b >= 0) b else
-                    Settings.System.getInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS, 128) / 255f
+                    Settings.System.getInt(act.contentResolver, Settings.System.SCREEN_BRIGHTNESS, 128) / 255f
                 startVolume = audio.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)
             }
         }
 
         override fun onDrag(dy: Float) {
-            val root = findViewById<View>(R.id.playerRoot)
             if (!isLandscape) {
-                // свайп вниз — свернуть в мини-плеер
-                val d = dy.coerceAtLeast(0f)
-                root.translationY = d
-                root.alpha = 1f - (d / root.height).coerceIn(0f, 0.6f)
+                act.dragPlayer(dy) // свайп вниз — свернуть в мини-плеер
                 return
             }
             val h = playerBox.height.toFloat().coerceAtLeast(1f)
             val delta = -dy / h * 1.2f
             if (dragStartX < 0.5f) {
                 val b = (startBrightness + delta).coerceIn(0.01f, 1f)
-                window.attributes = window.attributes.apply { screenBrightness = b }
+                act.window.attributes = act.window.attributes.apply { screenBrightness = b }
                 overlay.showInfo("☀  ${(b * 100).toInt()}%")
             } else {
                 val max = audio.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
@@ -381,21 +412,11 @@ class PlayerActivity : Activity() {
         }
 
         override fun onDragEnd(dy: Float) {
-            if (isLandscape) return
-            val root = findViewById<View>(R.id.playerRoot)
-            if (dy > root.height * 0.2f) {
-                root.animate().translationY(root.height.toFloat()).alpha(0f).setDuration(150).withEndAction {
-                    finish()
-                    @Suppress("DEPRECATION")
-                    overridePendingTransition(0, 0)
-                }
-            } else {
-                root.animate().translationY(0f).alpha(1f).setDuration(150)
-            }
+            if (!isLandscape) act.dragPlayerEnd(dy)
         }
     }
 
-    private val audio by lazy { getSystemService(android.media.AudioManager::class.java) }
+    private val audio by lazy { act.getSystemService(android.media.AudioManager::class.java) }
 
     // ---------- настройки плеера ----------
 
@@ -409,15 +430,15 @@ class PlayerActivity : Activity() {
         val vs = c.videoSize
         val q = if (vs.height > 0) "${minOf(vs.width, vs.height)}p" else "—"
         val speed = c.playbackParameters.speed
-        AlertDialog.Builder(this)
-            .setItems(arrayOf("Качество: $q", "Скорость: ${speedName(speed)}")) { _, which ->
+        AlertDialog.Builder(act)
+            .setItems(arrayOf(act.getString(R.string.quality_is, q), act.getString(R.string.speed_is, speedName(speed)))) { _, which ->
                 if (which == 0) chooseQuality(c) else chooseSpeed(c)
             }
             .show()
     }
 
     private fun chooseQuality(c: MediaController) {
-        TrackSelectionDialogBuilder(this, "Качество", c, C.TRACK_TYPE_VIDEO)
+        TrackSelectionDialogBuilder(act, act.getString(R.string.quality), c, C.TRACK_TYPE_VIDEO)
             .setTrackNameProvider { f ->
                 "${minOf(f.width, f.height)}p" + if (f.frameRate > 30) "${f.frameRate.toInt()}" else ""
             }
@@ -430,8 +451,8 @@ class PlayerActivity : Activity() {
     private fun chooseSpeed(c: MediaController) {
         val values = floatArrayOf(0.25f, 0.5f, 0.75f, 1f, 1.25f, 1.5f, 1.75f, 2f)
         val cur = values.indexOfFirst { it == c.playbackParameters.speed }
-        AlertDialog.Builder(this)
-            .setTitle("Скорость")
+        AlertDialog.Builder(act)
+            .setTitle(R.string.speed)
             .setSingleChoiceItems(values.map { speedName(it) }.toTypedArray(), cur) { d, i ->
                 c.setPlaybackSpeed(values[i])
                 d.dismiss()
@@ -439,7 +460,7 @@ class PlayerActivity : Activity() {
             .show()
     }
 
-    private fun speedName(s: Float) = if (s == 1f) "обычная" else "${s.toString().removeSuffix(".0")}x"
+    private fun speedName(s: Float) = if (s == 1f) act.getString(R.string.speed_normal) else "${s.toString().removeSuffix(".0")}x"
 
     // ---------- описание, канал, рекомендации ----------
 
@@ -455,7 +476,7 @@ class PlayerActivity : Activity() {
         relatedContinuation = null
         Net.io.execute {
             val r = runCatching { InnerTube.next(id) }.onFailure { ErrorLog.log("Страница видео $id", it) }.getOrNull()
-            runOnUiThread {
+            act.runOnUiThread {
                 if (detailsFor != id || r == null) return@runOnUiThread
                 current = r
                 likeStatus = r.likeStatus
@@ -475,7 +496,7 @@ class PlayerActivity : Activity() {
         relatedLoading = true
         Net.io.execute {
             val r = runCatching { InnerTube.more("next", token, exclude = id) }
-            runOnUiThread {
+            act.runOnUiThread {
                 relatedLoading = false
                 if (detailsFor != id) return@runOnUiThread
                 r.onSuccess {
@@ -527,20 +548,20 @@ class PlayerActivity : Activity() {
         override fun onBindViewHolder(h: VH, position: Int) {
             val d = d
             h.title.text = d?.title?.ifEmpty { null } ?: title.orEmpty()
-            h.meta.text = listOf(d?.meta.orEmpty(), if (d != null) "ещё" else "")
+            h.meta.text = listOf(d?.meta.orEmpty(), if (d != null) act.getString(R.string.more) else "")
                 .filter { it.isNotBlank() }.joinToString("  ")
             h.channel.text = d?.channel.orEmpty()
             h.subs.text = d?.subs.orEmpty()
             h.avatar.loadAvatar(d?.avatar)
             h.info.setOnClickListener { if (d != null) openDescription() }
             val ch = d?.channelId
-            h.channelRow.setOnClickListener { ch?.let { ChannelActivity.open(this@PlayerActivity, it) } }
+            h.channelRow.setOnClickListener { ch?.let { act.openChannel(it) } }
             h.subscribe.bindSubscribe(ch, d?.subscribed ?: false)
 
             h.rateBox.visibility = if (d != null && (d.likes.isNotEmpty() || Auth.loggedIn)) View.VISIBLE else View.GONE
-            h.likeCount.text = d?.likes.orEmpty().ifEmpty { "Нравится" }
-            val on = getColor(R.color.link)
-            val off = getColor(R.color.text)
+            h.likeCount.text = d?.likes.orEmpty().ifEmpty { act.getString(R.string.like) }
+            val on = act.getColor(R.color.link)
+            val off = act.getColor(R.color.text)
             h.likeIcon.setColorFilter(if (likeStatus == "LIKE") on else off)
             h.dislikeIcon.setColorFilter(if (likeStatus == "DISLIKE") on else off)
             h.likeBtn.setOnClickListener { rate(if (likeStatus == "LIKE") "INDIFFERENT" else "LIKE") }
@@ -550,7 +571,7 @@ class PlayerActivity : Activity() {
             val hasComments = d != null && d.commentsToken != null
             h.commentsCard.visibility = if (hasComments) View.VISIBLE else View.GONE
             if (d != null) {
-                h.commentsHeader.text = listOf("Комментарии", d.commentsCount).filter { it.isNotBlank() }.joinToString("  ")
+                h.commentsHeader.text = listOf(act.getString(R.string.comments), d.commentsCount).filter { it.isNotBlank() }.joinToString("  ")
                 h.teaserRow.visibility = if (d.teaserText.isBlank()) View.GONE else View.VISIBLE
                 h.teaserText.text = d.teaserText
                 h.teaserAvatar.loadAvatar(d.teaserAvatar)
@@ -594,27 +615,27 @@ class PlayerActivity : Activity() {
 
     @SuppressLint("ClickableViewAccessibility")
     private fun setupPanel() {
-        panel = findViewById(R.id.panel)
-        panelTitle = findViewById(R.id.panelTitle)
-        panelBack = findViewById(R.id.panelBack)
-        sortRow = findViewById(R.id.sortRow)
-        sortTop = findViewById(R.id.sortTop)
-        sortNew = findViewById(R.id.sortNew)
-        descScroll = findViewById(R.id.descScroll)
-        commentList = findViewById(R.id.commentList)
-        panelProgress = findViewById(R.id.panelProgress)
-        panelMessage = findViewById(R.id.panelMessage)
-        inputRow = findViewById(R.id.inputRow)
-        input = findViewById(R.id.input)
+        panel = root.findViewById(R.id.panel)
+        panelTitle = root.findViewById(R.id.panelTitle)
+        panelBack = root.findViewById(R.id.panelBack)
+        sortRow = root.findViewById(R.id.sortRow)
+        sortTop = root.findViewById(R.id.sortTop)
+        sortNew = root.findViewById(R.id.sortNew)
+        descScroll = root.findViewById(R.id.descScroll)
+        commentList = root.findViewById(R.id.commentList)
+        panelProgress = root.findViewById(R.id.panelProgress)
+        panelMessage = root.findViewById(R.id.panelMessage)
+        inputRow = root.findViewById(R.id.inputRow)
+        input = root.findViewById(R.id.input)
 
-        findViewById<View>(R.id.panelClose).setOnClickListener { closePanel() }
+        root.findViewById<View>(R.id.panelClose).setOnClickListener { closePanel() }
         panelBack.setOnClickListener { openComments() }
         sortTop.setOnClickListener { selectSort(0) }
         sortNew.setOnClickListener { selectSort(1) }
-        findViewById<View>(R.id.send).setOnClickListener { send() }
-        findViewById<TextView>(R.id.descText).movementMethod = LinkMovementMethod.getInstance()
+        root.findViewById<View>(R.id.send).setOnClickListener { send() }
+        root.findViewById<TextView>(R.id.descText).movementMethod = LinkMovementMethod.getInstance()
 
-        val lm = LinearLayoutManager(this)
+        val lm = LinearLayoutManager(act)
         commentList.layoutManager = lm
         commentList.addOnScrollListener(object : RecyclerView.OnScrollListener() {
             override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
@@ -626,7 +647,7 @@ class PlayerActivity : Activity() {
 
         // Свайп вниз по шапке панели закрывает её
         var startY = 0f
-        findViewById<View>(R.id.panelHeader).setOnTouchListener { _, e ->
+        root.findViewById<View>(R.id.panelHeader).setOnTouchListener { _, e ->
             when (e.actionMasked) {
                 MotionEvent.ACTION_DOWN -> { startY = e.rawY; true }
                 MotionEvent.ACTION_MOVE -> { panel.translationY = (e.rawY - startY).coerceAtLeast(0f); true }
@@ -664,7 +685,7 @@ class PlayerActivity : Activity() {
     private fun openDescription() {
         val d = current ?: return
         mode = Mode.DESC
-        panelTitle.text = "Описание"
+        panelTitle.setText(R.string.description)
         panelBack.visibility = View.GONE
         sortRow.visibility = View.GONE
         inputRow.visibility = View.GONE
@@ -674,32 +695,32 @@ class PlayerActivity : Activity() {
         descScroll.visibility = View.VISIBLE
         descScroll.scrollTo(0, 0)
 
-        findViewById<TextView>(R.id.descTitle).text = d.title
-        val box = findViewById<LinearLayout>(R.id.factoids)
+        root.findViewById<TextView>(R.id.descTitle).text = d.title
+        val box = root.findViewById<LinearLayout>(R.id.factoids)
         box.removeAllViews()
         for ((value, label) in d.factoids) {
-            val col = LinearLayout(this).apply {
+            val col = LinearLayout(act).apply {
                 orientation = LinearLayout.VERTICAL
                 gravity = Gravity.CENTER_HORIZONTAL
             }
-            col.addView(TextView(this).apply {
+            col.addView(TextView(act).apply {
                 text = value
                 textSize = 16f
-                setTextColor(getColor(R.color.text))
+                setTextColor(act.getColor(R.color.text))
                 paint.isFakeBoldText = true
                 gravity = Gravity.CENTER
             })
-            col.addView(TextView(this).apply {
+            col.addView(TextView(act).apply {
                 text = label
                 textSize = 12f
-                setTextColor(getColor(R.color.sub))
+                setTextColor(act.getColor(R.color.sub))
                 gravity = Gravity.CENTER
             })
             box.addView(col, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
         }
         box.visibility = if (d.factoids.isEmpty()) View.GONE else View.VISIBLE
-        val desc = findViewById<TextView>(R.id.descText)
-        desc.text = TextUtil.linkify(d.description.ifBlank { "Нет описания" }) { seekTo(it) }
+        val desc = root.findViewById<TextView>(R.id.descText)
+        desc.text = TextUtil.linkify(d.description.ifBlank { act.getString(R.string.no_description) }) { seekTo(it) }
         showPanel()
     }
 
@@ -721,7 +742,7 @@ class PlayerActivity : Activity() {
 
     private fun openComments() {
         mode = Mode.COMMENTS
-        panelTitle.text = listOf("Комментарии", current?.commentsCount.orEmpty()).filter { it.isNotBlank() }.joinToString("  ")
+        panelTitle.text = listOf(act.getString(R.string.comments), current?.commentsCount.orEmpty()).filter { it.isNotBlank() }.joinToString("  ")
         panelBack.visibility = View.GONE
         descScroll.visibility = View.GONE
         panelMessage.visibility = View.GONE
@@ -738,7 +759,7 @@ class PlayerActivity : Activity() {
         listOf(sortTop, sortNew).forEachIndexed { i, v ->
             val sel = i == sortIndex
             v.setBackgroundResource(if (sel) R.drawable.chip_selected else R.drawable.chip)
-            v.setTextColor(if (sel) 0xFF0F0F0F.toInt() else getColor(R.color.text))
+            v.setTextColor(if (sel) 0xFF0F0F0F.toInt() else act.getColor(R.color.text))
         }
     }
 
@@ -754,8 +775,8 @@ class PlayerActivity : Activity() {
         val params = if (mode == Mode.REPLIES) repliesParent?.replyParams else createParams
         val show = Auth.loggedIn && params != null && (mode == Mode.COMMENTS || mode == Mode.REPLIES)
         inputRow.visibility = if (show) View.VISIBLE else View.GONE
-        input.hint = if (mode == Mode.REPLIES) "Ответить ${repliesParent?.author.orEmpty()}…" else "Добавьте комментарий…"
-        findViewById<ImageView>(R.id.inputAvatar).loadAvatar(Auth.active?.avatar)
+        input.hint = if (mode == Mode.REPLIES) act.getString(R.string.reply_to, repliesParent?.author.orEmpty()) else act.getString(R.string.add_comment)
+        root.findViewById<ImageView>(R.id.inputAvatar).loadAvatar(Auth.active?.avatar)
     }
 
     private fun loadComments(more: Boolean, token: String? = null) {
@@ -770,7 +791,7 @@ class PlayerActivity : Activity() {
         }
         Net.io.execute {
             val r = runCatching { InnerTube.comments(t) }
-            runOnUiThread {
+            act.runOnUiThread {
                 if (g != commentsGen) return@runOnUiThread
                 commentsLoading = false
                 panelProgress.visibility = View.GONE
@@ -783,11 +804,11 @@ class PlayerActivity : Activity() {
                     if (mode == Mode.COMMENTS) {
                         updateSortRow()
                         updateInput()
-                        if (!more && p.items.isEmpty()) showPanelMessage("Комментариев пока нет")
+                        if (!more && p.items.isEmpty()) showPanelMessage(act.getString(R.string.no_comments))
                     }
                 }.onFailure {
                     ErrorLog.log("Комментарии", it)
-                    if (!more) showPanelMessage("Не удалось загрузить комментарии")
+                    if (!more) showPanelMessage(act.getString(R.string.comments_failed))
                 }
             }
         }
@@ -797,7 +818,7 @@ class PlayerActivity : Activity() {
         mode = Mode.REPLIES
         repliesParent = c
         repliesCont = c.repliesToken
-        panelTitle.text = "Ответы"
+        panelTitle.setText(R.string.replies)
         panelBack.visibility = View.VISIBLE
         sortRow.visibility = View.GONE
         panelMessage.visibility = View.GONE
@@ -815,7 +836,7 @@ class PlayerActivity : Activity() {
         if (!more) panelProgress.visibility = View.VISIBLE
         Net.io.execute {
             val r = runCatching { InnerTube.comments(t) }
-            runOnUiThread {
+            act.runOnUiThread {
                 repliesLoading = false
                 panelProgress.visibility = View.GONE
                 if (repliesParent !== parent) return@runOnUiThread
@@ -842,10 +863,10 @@ class PlayerActivity : Activity() {
             val ok = runCatching {
                 if (replyTo != null) InnerTube.createReply(params, text) else InnerTube.createComment(params, text)
             }.onFailure { ErrorLog.log("Отправка комментария", it) }.getOrDefault(false)
-            runOnUiThread {
+            act.runOnUiThread {
                 input.isEnabled = true
                 if (!ok) {
-                    Toast.makeText(this, "Не удалось отправить", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(act, R.string.send_failed, Toast.LENGTH_SHORT).show()
                     return@runOnUiThread
                 }
                 input.setText("")
@@ -853,7 +874,7 @@ class PlayerActivity : Activity() {
                 val acc = Auth.active
                 val mine = Comment(
                     id = "local-${System.currentTimeMillis()}", author = acc?.name.orEmpty(), authorId = null, avatar = acc?.avatar,
-                    text = text, time = "только что", likes = "", replies = "", repliesToken = null, replyParams = null,
+                    text = text, time = act.getString(R.string.just_now), likes = "", replies = "", repliesToken = null, replyParams = null,
                 )
                 if (replyTo != null) repliesAdapter.insert(1, mine) else {
                     commentsAdapter.insert(0, mine)
@@ -865,7 +886,7 @@ class PlayerActivity : Activity() {
     }
 
     private fun hideKeyboard() =
-        getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(input.windowToken, 0)
+        act.getSystemService(InputMethodManager::class.java).hideSoftInputFromWindow(input.windowToken, 0)
 
     private inner class CommentAdapter(private val onReplies: ((Comment) -> Unit)?) :
         RecyclerView.Adapter<CommentAdapter.VH>() {
@@ -907,15 +928,15 @@ class PlayerActivity : Activity() {
             val c = items[position]
             // в ответах всё, кроме первого (родительского) комментария, с отступом и мельче
             val nested = onReplies == null && position > 0
-            val size = (resources.displayMetrics.density * if (nested) 24 else 32).toInt()
+            val size = (act.resources.displayMetrics.density * if (nested) 24 else 32).toInt()
             h.avatar.layoutParams = h.avatar.layoutParams.apply { width = size; height = size }
             h.itemView.setPadding(
-                (resources.displayMetrics.density * if (nested) 56 else 16).toInt(),
+                (act.resources.displayMetrics.density * if (nested) 56 else 16).toInt(),
                 h.itemView.paddingTop, h.itemView.paddingRight, h.itemView.paddingBottom
             )
             h.avatar.loadAvatar(c.avatar)
             val aid = c.authorId
-            h.avatar.setOnClickListener(if (aid != null) View.OnClickListener { ChannelActivity.open(this@PlayerActivity, aid) } else null)
+            h.avatar.setOnClickListener(if (aid != null) View.OnClickListener { act.openChannel(aid) } else null)
             h.author.text = listOf(c.author, c.time).filter { it.isNotBlank() }.joinToString(" · ")
             h.text.text = TextUtil.linkify(c.text) { seekTo(it) }
             h.text.movementMethod = LinkMovementMethod.getInstance()
@@ -923,26 +944,23 @@ class PlayerActivity : Activity() {
             val showReplies = onReplies != null && c.repliesToken != null
             h.replies.visibility = if (showReplies) View.VISIBLE else View.GONE
             if (showReplies) {
-                h.replies.text = if (c.replies.isNotBlank()) "${c.replies} ${repliesWord(c.replies)}" else "Ответы"
+                h.replies.text = repliesText(c.replies)
                 h.replies.setOnClickListener { onReplies?.invoke(c) }
             }
         }
     }
 
-    private fun repliesWord(n: String): String {
-        val v = n.filter { it.isDigit() }.toIntOrNull() ?: return "ответов"
-        if (n.any { !it.isDigit() && !it.isWhitespace() }) return "ответов"
-        return when {
-            v % 100 in 11..14 -> "ответов"
-            v % 10 == 1 -> "ответ"
-            v % 10 in 2..4 -> "ответа"
-            else -> "ответов"
-        }
+    /** «12 ответов» / «1,2 тыс. ответов» на языке интерфейса. */
+    private fun repliesText(n: String): String {
+        if (n.isBlank()) return act.getString(R.string.replies)
+        val num = n.trim().toIntOrNull()
+        return if (num != null) act.resources.getQuantityString(R.plurals.replies, num, n.trim())
+        else act.getString(R.string.replies_count, n.trim())
     }
 
     // ---------- ориентация ----------
 
-    private val isLandscape get() = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
+    private val isLandscape get() = act.resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     /** Поставить нужную ориентацию. Если она уже такая — ничего не делать (без зацикливания). */
     private fun setLandscape(land: Boolean) {
@@ -950,16 +968,16 @@ class PlayerActivity : Activity() {
         val target = if (land) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         forced = target
-        requestedOrientation = target
+        act.requestedOrientation = target
         if (autoRotate()) orientationListener.enable()
     }
 
     private fun autoRotate() =
-        Settings.System.getInt(contentResolver, Settings.System.ACCELEROMETER_ROTATION, 0) == 1
+        Settings.System.getInt(act.contentResolver, Settings.System.ACCELEROMETER_ROTATION, 0) == 1
 
     /** Как в YouTube: после кнопки ориентация держится, пока телефон не повернут так же, потом снова работает автоповорот. */
     private val orientationListener by lazy {
-        object : OrientationEventListener(this) {
+        object : OrientationEventListener(act) {
             override fun onOrientationChanged(deg: Int) {
                 val f = forced ?: return disable()
                 if (deg == ORIENTATION_UNKNOWN) return
@@ -968,26 +986,32 @@ class PlayerActivity : Activity() {
                 val matched = if (f == ActivityInfo.SCREEN_ORIENTATION_PORTRAIT) physPortrait else physLandscape
                 if (matched) {
                     forced = null
-                    requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+                    act.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
                     disable()
                 }
             }
         }
     }
 
-    @Deprecated("Deprecated in Java")
-    override fun onBackPressed() {
-        when {
-            isLandscape -> setLandscape(false)
-            mode == Mode.REPLIES -> openComments()
-            panel.visibility == View.VISIBLE -> closePanel()
-            else -> super.onBackPressed()
-        }
+    /** «Назад» внутри плеера. false — пусть плеер сворачивается. */
+    fun onBack(): Boolean = when {
+        web != null -> { closeWeb(); false }
+        isLandscape -> { setLandscape(false); true }
+        mode == Mode.REPLIES -> { openComments(); true }
+        panel.visibility == View.VISIBLE -> { closePanel(); true }
+        else -> false
     }
 
-    override fun onConfigurationChanged(newConfig: Configuration) {
-        super.onConfigurationChanged(newConfig)
-        applyLayout()
+    fun onConfigurationChanged() = applyLayout()
+
+    /** Свернуть: сначала вернуть портретную ориентацию. */
+    fun prepareCollapse() {
+        if (isLandscape) setLandscape(false)
+        if (forced != null || act.requestedOrientation != ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED) {
+            forced = null
+            orientationListener.disable()
+            act.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        }
     }
 
     private fun applyLayout() {
@@ -996,20 +1020,21 @@ class PlayerActivity : Activity() {
         if (land) {
             lp.height = ViewGroup.LayoutParams.MATCH_PARENT
             lp.weight = 1f
-            findViewById<View>(R.id.below).visibility = View.GONE
+            root.findViewById<View>(R.id.below).visibility = View.GONE
         } else {
-            lp.height = resources.displayMetrics.widthPixels * 9 / 16
+            lp.height = act.resources.displayMetrics.widthPixels * 9 / 16
             lp.weight = 0f
-            findViewById<View>(R.id.below).visibility = View.VISIBLE
+            root.findViewById<View>(R.id.below).visibility = View.VISIBLE
         }
         playerBox.layoutParams = lp
         view.setFullscreenButtonState(land)
         if (!land) view.resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
         // В полноэкранном режиме — под скрытыми системными панелями, чтобы кадр был ровно по центру
-        WindowCompat.setDecorFitsSystemWindows(window, !land)
+        val full = land && expanded
+        WindowCompat.setDecorFitsSystemWindows(act.window, !full)
 
-        val ic = WindowCompat.getInsetsController(window, window.decorView)
-        if (land) {
+        val ic = WindowCompat.getInsetsController(act.window, act.window.decorView)
+        if (full) {
             ic.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
             ic.hide(WindowInsetsCompat.Type.systemBars())
         } else {
@@ -1017,9 +1042,7 @@ class PlayerActivity : Activity() {
         }
     }
 
-    companion object {
-        const val EXTRA_ID = "id"
-        const val EXTRA_TITLE = "title"
-        const val EXTRA_START = "start"
+    init {
+        setup()
     }
 }

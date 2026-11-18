@@ -43,6 +43,8 @@ import kotlin.random.Random
 @OptIn(UnstableApi::class)
 class PlaybackService : MediaSessionService() {
 
+    override fun attachBaseContext(base: android.content.Context) = super.attachBaseContext(Lang.wrap(base))
+
     private lateinit var player: ExoPlayer
     private lateinit var session: MediaSession
     private val resolved = ConcurrentHashMap<String, Resolved>()
@@ -95,7 +97,7 @@ class PlaybackService : MediaSessionService() {
         player.addListener(watchTracker)
 
         val open = PendingIntent.getActivity(
-            this, 0, Intent(this, PlayerActivity::class.java),
+            this, 0, Intent(this, MainActivity::class.java).putExtra(MainActivity.EXTRA_EXPAND, true),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         session = MediaSession.Builder(this, player)
@@ -111,6 +113,7 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        closeSeg()
         saveResume()
         reportWatchTime()
         session.release()
@@ -150,7 +153,10 @@ class PlaybackService : MediaSessionService() {
                         // Не продолжать играть предыдущее видео, раз пользователь открыл другое
                         player.stop()
                         player.clearMediaItems()
-                        Toast.makeText(this@PlaybackService, "Не удалось открыть видео: ${e.message}", Toast.LENGTH_LONG).show()
+                        // 18+ со входом откроется в веб-плеере — сообщение не нужно
+                        if (!(e is AgeGateException && Auth.loggedIn)) {
+                            Toast.makeText(this@PlaybackService, getString(R.string.open_failed, e.message), Toast.LENGTH_LONG).show()
+                        }
                     }
                     f.setException(e)
                 }
@@ -214,7 +220,7 @@ class PlaybackService : MediaSessionService() {
         override fun getSupportedTypes() = intArrayOf(C.CONTENT_TYPE_DASH, C.CONTENT_TYPE_OTHER)
 
         override fun createMediaSource(mediaItem: MediaItem): MediaSource {
-            val r = resolved[mediaItem.mediaId] ?: throw IllegalStateException("Видео не подготовлено")
+            val r = resolved[mediaItem.mediaId] ?: throw IllegalStateException("not prepared")
             val parts = (r.videos + listOfNotNull(r.audio)).map { build(it, mediaItem) }
             return if (parts.size == 1) parts[0] else MergingMediaSource(true, true, *parts.toTypedArray())
         }
@@ -288,8 +294,9 @@ class PlaybackService : MediaSessionService() {
             skipMessages += player.createMessage { _, _ ->
                 if (Prefs.sponsorBlock && player.currentMediaItem?.mediaId == id && player.currentPosition < seg.end - 500) {
                     player.seekTo(seg.end)
-                    val what = SponsorBlock.CATEGORIES[seg.category] ?: "вставка"
-                    Toast.makeText(this, "Пропущено: ${what.lowercase()}", Toast.LENGTH_SHORT).show()
+                    val what = SponsorBlock.CATEGORIES[seg.category]?.let { getString(it) } ?: getString(R.string.sb_segment)
+                    Toast.makeText(this, getString(R.string.sb_skipped, what.lowercase()), Toast.LENGTH_SHORT).show()
+                    Stats.skipped(seg.end - seg.start)
                 }
             }.setLooper(Looper.getMainLooper()).setPosition(seg.start).setDeleteAfterDelivery(false).send()
         }
@@ -302,14 +309,63 @@ class PlaybackService : MediaSessionService() {
         Prefs.saveResume(id, player.currentPosition, player.duration)
     }
 
+    // ---------- статистика (только по событиям плеера) ----------
+
+    private var segStart = 0L
+    private var segBg = false
+    private var segBitrate = 0L
+
+    private fun videoOff() = player.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_VIDEO)
+
+    /** Примерный битрейт видео, которое грузилось бы сейчас (для оценки сэкономленного трафика). */
+    private fun videoBitrate(): Long {
+        val r = player.currentMediaItem?.mediaId?.let { resolved[it] }
+        val q = (if (onWifi()) Prefs.qualityWifi else Prefs.qualityMobile).takeIf { it > 0 } ?: Int.MAX_VALUE
+        val h = r?.videos?.map { minOf(it.width, it.height) }?.filter { it <= q }?.maxOrNull() ?: 720
+        return when {
+            h >= 2160 -> 16_000_000L
+            h >= 1440 -> 9_000_000L
+            h >= 1080 -> 4_500_000L
+            h >= 720 -> 2_500_000L
+            h >= 480 -> 1_200_000L
+            h >= 360 -> 700_000L
+            else -> 300_000L
+        }
+    }
+
+    private fun startSeg() {
+        segStart = android.os.SystemClock.elapsedRealtime()
+        segBg = videoOff()
+        segBitrate = if (segBg) videoBitrate() else 0
+    }
+
+    private fun closeSeg() {
+        if (segStart == 0L) return
+        val dt = android.os.SystemClock.elapsedRealtime() - segStart
+        segStart = 0
+        Stats.add(dt, if (segBg) dt else 0, if (segBg) dt * segBitrate / 8 / 1000 else 0, player.mediaMetadata.artist?.toString())
+    }
+
     private val watchTracker = object : Player.Listener {
-        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) = scheduleSkips()
+        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            scheduleSkips()
+            if (mediaItem != null) Stats.video()
+        }
+
+        override fun onTrackSelectionParametersChanged(parameters: androidx.media3.common.TrackSelectionParameters) {
+            // включили/выключили видео посреди воспроизведения — новый отрезок
+            if (player.isPlaying && segBg != videoOff()) {
+                closeSeg()
+                startSeg()
+            }
+        }
 
         override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
             ErrorLog.log("Воспроизведение ${player.currentMediaItem?.mediaId} (${error.errorCodeName})", error)
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            if (isPlaying) startSeg() else closeSeg()
             if (!isPlaying && player.playbackState != Player.STATE_BUFFERING) saveResume()
             if (!Auth.loggedIn) return
             val id = player.currentMediaItem?.mediaId ?: return

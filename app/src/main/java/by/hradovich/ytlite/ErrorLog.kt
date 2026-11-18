@@ -52,5 +52,5 @@ object ErrorLog {
     fun export(): String =
         "YT Lite ${BuildConfig.VERSION_NAME} (${BuildConfig.VERSION_CODE})\n" +
             "${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})\n\n" +
-            read().ifEmpty { "Ошибок нет" }
+            read().ifEmpty { "No errors" }
 }

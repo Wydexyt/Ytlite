@@ -97,8 +97,8 @@ object InnerTube {
                 "client", JSONObject()
                     .put("clientName", "WEB")
                     .put("clientVersion", ver)
-                    .put("hl", "ru")
-                    .put("gl", "BY")
+                    .put("hl", Lang.hl)
+                    .put("gl", Lang.gl)
             )
         )
         val rb = Request.Builder()
@@ -110,7 +110,7 @@ object InnerTube {
         Auth.headers().forEach { (k, v) -> rb.header(k, v) }
         Net.http.newCall(rb.build()).execute().use { r ->
             Auth.merge(r.headers("Set-Cookie"))
-            if (!r.isSuccessful) throw IOException("YouTube ответил ${r.code}")
+            if (!r.isSuccessful) throw IOException(Lang.str(R.string.err_http, r.code))
             return JSONObject(r.body?.string().orEmpty())
         }
     }
@@ -389,8 +389,8 @@ object InnerTube {
         val url = "https://suggestqueries-clients6.youtube.com/complete/search".toHttpUrlOrNull()!!.newBuilder()
             .addQueryParameter("client", "youtube")
             .addQueryParameter("ds", "yt")
-            .addQueryParameter("hl", "ru")
-            .addQueryParameter("gl", "by")
+            .addQueryParameter("hl", Lang.hl)
+            .addQueryParameter("gl", Lang.gl.lowercase())
             .addQueryParameter("q", q)
             .build()
         Net.http.newCall(Request.Builder().url(url).header("User-Agent", Net.UA).build()).execute().use { r ->

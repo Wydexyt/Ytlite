@@ -12,6 +12,13 @@
         <item name="android:navigationBarColor">@color/bg</item>
     </style>
 
+    <!-- Заставка при запуске (Android 12+ — системная, ниже — через core-splashscreen) -->
+    <style name="AppTheme.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/bg</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_fg</item>
+        <item name="postSplashScreenTheme">@style/AppTheme</item>
+    </style>
+
     <color name="bg">#FF0F0F0F</color>
     <color name="text">#FFF1F1F1</color>
     <color name="sub">#FFAAAAAA</color>

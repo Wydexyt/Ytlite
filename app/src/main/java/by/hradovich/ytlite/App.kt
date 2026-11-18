@@ -20,6 +20,11 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
 class App : Application(), ImageLoaderFactory {
+    companion object {
+        lateinit var instance: App
+            private set
+    }
+
     /** Превью и аватары: общий OkHttp и кэш на диске не больше 100 МБ. */
     override fun newImageLoader(): ImageLoader = ImageLoader.Builder(this)
         .okHttpClient(Net.http)
@@ -33,6 +38,7 @@ class App : Application(), ImageLoaderFactory {
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
         ErrorLog.init(this)
         Prefs.init(this)
         // Новая версия — начинаем журнал ошибок с чистого листа
@@ -41,6 +47,7 @@ class App : Application(), ImageLoaderFactory {
             Prefs.lastVersion = BuildConfig.VERSION_NAME
         }
         Auth.init(this)
+        Stats.init(this)
         NewPipe.init(NpDownloader)
         // Прогрев: версия клиента и JS-плеер YouTube скачиваются заранее,
         // чтобы первое видео стартовало быстрее.
@@ -63,6 +70,11 @@ object Prefs {
     var qualityMobile: Int
         get() = p.getInt("qualityMobile", 480)
         set(v) = p.edit().putInt("qualityMobile", v).apply()
+
+    /** Язык интерфейса: system / ru / en. */
+    var language: String
+        get() = p.getString("language", "system") ?: "system"
+        set(v) = p.edit().putString("language", v).commit().let { }
 
     var lastVersion: String?
         get() = p.getString("lastVersion", null)
@@ -154,4 +166,45 @@ object NpDownloader : Downloader() {
             )
         }
     }
+}
+
+/** Язык интерфейса и запросов к YouTube. */
+object Lang {
+    private fun pref(ctx: Context) =
+        ctx.getSharedPreferences("prefs", Context.MODE_PRIVATE).getString("language", "system") ?: "system"
+
+    private fun locale(ctx: Context): java.util.Locale? = when (pref(ctx)) {
+        "ru" -> java.util.Locale("ru")
+        "en" -> java.util.Locale.ENGLISH
+        else -> null
+    }
+
+    /** Контекст с выбранным языком (для activity, сервиса, строк вне экранов). */
+    fun wrap(ctx: Context): Context {
+        val l = locale(ctx) ?: return ctx
+        val cfg = android.content.res.Configuration(ctx.resources.configuration)
+        cfg.setLocale(l)
+        return ctx.createConfigurationContext(cfg)
+    }
+
+    @Volatile
+    private var res: android.content.res.Resources? = null
+
+    /** Строка на языке интерфейса — для кода без своего контекста (ошибки, уведомления). */
+    fun str(id: Int, vararg args: Any): String {
+        val r = res ?: wrap(App.instance).resources.also { res = it }
+        return if (args.isEmpty()) r.getString(id) else r.getString(id, *args)
+    }
+
+    fun changed(ctx: Context) {
+        res = null
+    }
+
+    /** Язык для YouTube (hl): выбранный или системный. */
+    val hl: String
+        get() = locale(App.instance)?.language ?: java.util.Locale.getDefault().language.ifEmpty { "en" }
+
+    /** Страна для YouTube (gl). */
+    val gl: String
+        get() = java.util.Locale.getDefault().country.ifEmpty { "US" }
 }

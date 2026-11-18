@@ -50,7 +50,7 @@ fun TextView.bindSubscribe(channelId: String?, subscribed: Boolean) {
     }
     visibility = View.VISIBLE
     fun render(s: Boolean) {
-        text = if (s) "Вы подписаны" else "Подписаться"
+        text = context.getString(if (s) R.string.subscribed else R.string.subscribe)
         setBackgroundResource(if (s) R.drawable.chip else R.drawable.chip_selected)
         setTextColor(if (s) 0xFFF1F1F1.toInt() else 0xFF0F0F0F.toInt())
     }
@@ -69,15 +69,15 @@ fun TextView.bindSubscribe(channelId: String?, subscribed: Boolean) {
                     if (!ok) {
                         Subs.state[channelId] = !target
                         render(!target)
-                        Toast.makeText(context, "Не получилось, попробуйте ещё раз", Toast.LENGTH_SHORT).show()
+                        Toast.makeText(context, R.string.try_again, Toast.LENGTH_SHORT).show()
                     }
                 }
             }
         }
         if (target) go() else AlertDialog.Builder(context)
-            .setMessage("Отписаться от канала?")
-            .setPositiveButton("Отписаться") { _, _ -> go() }
-            .setNegativeButton("Отмена", null)
+            .setMessage(R.string.unsubscribe_confirm)
+            .setPositiveButton(R.string.unsubscribe) { _, _ -> go() }
+            .setNegativeButton(R.string.cancel, null)
             .show()
     }
 }
@@ -104,8 +104,20 @@ class VideoAdapter(private val onClick: (Video) -> Unit) : RecyclerView.Adapter<
 
     val isEmpty get() = items.isEmpty()
 
+    /** Пока лента грузится — серые карточки-заглушки. */
+    private var skeleton = false
+
+    @SuppressLint("NotifyDataSetChanged")
+    fun showSkeleton() {
+        skeleton = true
+        items.clear()
+        ids.clear()
+        notifyDataSetChanged()
+    }
+
     @SuppressLint("NotifyDataSetChanged")
     fun submit(list: List<Video>) {
+        skeleton = false
         items.clear()
         ids.clear()
         list.filterTo(items) { ids.add(it.id) }
@@ -122,24 +134,41 @@ class VideoAdapter(private val onClick: (Video) -> Unit) : RecyclerView.Adapter<
     @SuppressLint("NotifyDataSetChanged")
     fun refreshProgress() = notifyDataSetChanged()
 
-    override fun getItemViewType(position: Int) = if (items[position].isChannel) 1 else 0
+    override fun getItemViewType(position: Int) = when {
+        skeleton -> 2
+        items[position].isChannel -> 1
+        else -> 0
+    }
+
+    class SkeletonVH(v: View) : RecyclerView.ViewHolder(v)
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
         val inf = LayoutInflater.from(parent.context)
-        return if (viewType == 1) ChannelVH(inf.inflate(R.layout.item_channel, parent, false))
-        else VH(inf.inflate(R.layout.item_video, parent, false))
+        return when (viewType) {
+            1 -> ChannelVH(inf.inflate(R.layout.item_channel, parent, false))
+            2 -> SkeletonVH(inf.inflate(R.layout.item_skeleton, parent, false))
+            else -> VH(inf.inflate(R.layout.item_video, parent, false))
+        }
     }
 
-    override fun getItemCount() = items.size
+    override fun getItemCount() = if (skeleton) 5 else items.size
+
+    override fun onViewRecycled(holder: RecyclerView.ViewHolder) {
+        if (holder is SkeletonVH) holder.itemView.animate().cancel()
+    }
 
     override fun onBindViewHolder(holder: RecyclerView.ViewHolder, position: Int) {
+        if (holder is SkeletonVH) {
+            pulse(holder.itemView)
+            return
+        }
         val v = items[position]
         if (holder is ChannelVH) {
             holder.title.text = v.title
             holder.meta.text = v.meta
             holder.avatar.loadAvatar(v.avatar)
             holder.subscribe.bindSubscribe(v.id, v.subscribed)
-            holder.itemView.setOnClickListener { ChannelActivity.open(it.context, v.id) }
+            holder.itemView.setOnClickListener { it.context.openChannel(v.id) }
             return
         }
         val h = holder as VH
@@ -154,7 +183,7 @@ class VideoAdapter(private val onClick: (Video) -> Unit) : RecyclerView.Adapter<
         h.avatar.loadAvatar(v.avatar)
         h.avatar.visibility = if (v.avatar == null && v.channel.isEmpty()) View.GONE else View.VISIBLE
         val ch = v.channelId
-        h.avatar.setOnClickListener(if (ch != null) View.OnClickListener { ChannelActivity.open(it.context, ch) } else null)
+        h.avatar.setOnClickListener(if (ch != null) View.OnClickListener { it.context.openChannel(ch) } else null)
         h.itemView.setOnClickListener { onClick(v) }
         h.itemView.setOnLongClickListener { showMenu(it, v); true }
     }
@@ -163,25 +192,33 @@ class VideoAdapter(private val onClick: (Video) -> Unit) : RecyclerView.Adapter<
     private fun showMenu(anchor: View, v: Video) {
         val ctx = anchor.context
         val menu = PopupMenu(ctx, anchor)
-        if (v.notInterestedToken != null && Auth.loggedIn) menu.menu.add(0, 1, 0, "Не интересует")
-        menu.menu.add(0, 2, 1, "Поделиться")
-        if (v.channelId != null) menu.menu.add(0, 3, 2, "Открыть канал")
+        if (v.notInterestedToken != null && Auth.loggedIn) menu.menu.add(0, 1, 0, R.string.not_interested)
+        menu.menu.add(0, 2, 1, R.string.share)
+        if (v.channelId != null) menu.menu.add(0, 3, 2, R.string.open_channel)
         menu.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 1 -> {
                     remove(v.id)
-                    Toast.makeText(ctx, "Видео скрыто", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(ctx, R.string.video_hidden, Toast.LENGTH_SHORT).show()
                     val token = v.notInterestedToken!!
                     Net.io.execute {
                         runCatching { InnerTube.notInterested(token) }.onFailure { ErrorLog.log("Не интересует", it) }
                     }
                 }
                 2 -> Share.video(ctx, v.id, v.title)
-                3 -> v.channelId?.let { ChannelActivity.open(ctx, it) }
+                3 -> v.channelId?.let { ctx.openChannel(it) }
             }
             true
         }
         menu.show()
+    }
+
+    /** Мягкая пульсация заглушки, пока она на экране. */
+    private fun pulse(v: View) {
+        v.animate().cancel()
+        v.alpha = 1f
+        fun down(): Unit = run { v.animate().alpha(0.45f).setDuration(650).withEndAction { if (skeleton && v.isAttachedToWindow) v.animate().alpha(1f).setDuration(650).withEndAction { if (skeleton && v.isAttachedToWindow) down() } } }
+        down()
     }
 
     private fun remove(id: String) {
@@ -202,7 +239,7 @@ object Share {
             putExtra(android.content.Intent.EXTRA_TEXT, url)
             title?.let { putExtra(android.content.Intent.EXTRA_SUBJECT, it) }
         }
-        ctx.startActivity(android.content.Intent.createChooser(send, "Поделиться"))
+        ctx.startActivity(android.content.Intent.createChooser(send, ctx.getString(R.string.share)))
     }
 }
 
