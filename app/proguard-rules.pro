@@ -1,0 +1,11 @@
+# NewPipeExtractor использует Rhino и рефлексию
+-keep class org.mozilla.javascript.** { *; }
+-keep class org.mozilla.classfile.ClassFileWriter
+-keep class org.schabi.newpipe.extractor.** { *; }
+-dontwarn org.mozilla.javascript.**
+-dontwarn java.beans.**
+-dontwarn javax.script.**
+-dontwarn jdk.dynalink.**
+-dontwarn org.jspecify.**
+-dontwarn javax.annotation.**
+-ignorewarnings
