@@ -205,16 +205,26 @@ object AccountStreams {
         }
         val details = j.optJSONObject("videoDetails")
         val dur = details?.optString("lengthSeconds")?.toLongOrNull() ?: 0
-        val formats = j.optJSONObject("streamingData")?.optJSONArray("adaptiveFormats")
-            ?: throw IllegalStateException("Нет потоков")
+        val sd = j.optJSONObject("streamingData") ?: throw IllegalStateException("Нет streamingData")
+        val formats = sd.optJSONArray("adaptiveFormats") ?: org.json.JSONArray()
 
         class F(val o: JSONObject, val url: String, val itag: ItagItem)
         val list = ArrayList<F>()
+        var withUrl = 0
+        var withCipher = 0
+        var unsupported = 0
+        var firstError: Throwable? = null
         for (i in 0 until formats.length()) {
             val o = formats.optJSONObject(i) ?: continue
-            val f = runCatching { format(id, o, dur) }.getOrNull() ?: continue
+            if (o.has("url")) withUrl++
+            if (o.has("signatureCipher")) withCipher++
+            if (!ItagItem.isSupported(o.optInt("itag"))) unsupported++
+            val f = runCatching { format(id, o, dur) }.onFailure { if (firstError == null) firstError = it }.getOrNull() ?: continue
             list += f.let { (url, item) -> F(o, url, item) }
         }
+        val stats = "adaptive=${formats.length()} url=$withUrl cipher=$withCipher unsupported=$unsupported ok=${list.size} " +
+            "muxed=${sd.optJSONArray("formats")?.length() ?: 0} sabr=${sd.has("serverAbrStreamingUrl")}"
+        if (list.isEmpty()) ErrorLog.log("18+ $id: потоки не разобраны ($stats)", firstError ?: IllegalStateException(stats))
         val videos = list.filter { it.o.optString("mimeType").startsWith("video/") && it.o.optInt("height") > 0 }
             .groupBy { it.o.optInt("height") }
             .values.mapNotNull { same -> same.maxWithOrNull(compareBy<F>({ it.o.optInt("fps") }, { it.o.optString("mimeType").startsWith("video/webm") })) }
@@ -225,7 +235,23 @@ object AccountStreams {
                     .thenByDescending { it.o.optString("mimeType").startsWith("audio/mp4") }
                     .thenByDescending { it.o.optInt("bitrate") }
             ).firstOrNull()
-        if (videos.isEmpty() || audio == null) throw IllegalStateException("Нет подходящих потоков")
+        if (videos.isEmpty() || audio == null) {
+            // Запасной вариант: совмещённый поток (видео+звук, обычно 360p)
+            val muxed = sd.optJSONArray("formats")
+            if (muxed != null) for (i in 0 until muxed.length()) {
+                val o = muxed.optJSONObject(i) ?: continue
+                val url = runCatching { plainUrl(id, o) }.onFailure { if (firstError == null) firstError = it }.getOrNull() ?: continue
+                return Resolved(
+                    videos = listOf(Src(url, null, o.optInt("width"), o.optInt("height"))),
+                    audio = null,
+                    title = details?.optString("title").orEmpty(),
+                    uploader = details?.optString("author").orEmpty(),
+                    thumb = details?.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
+                        ?.let { it.optJSONObject(it.length() - 1)?.optString("url") },
+                )
+            }
+            throw IllegalStateException("Нет подходящих потоков ($stats)" + (firstError?.let { ": ${it.message}" } ?: ""))
+        }
 
         fun src(f: F) = Src(
             f.url, runCatching { YoutubeProgressiveDashManifestCreator.fromProgressiveStreamingUrl(f.url, f.itag, dur) }.getOrNull(),
@@ -241,13 +267,13 @@ object AccountStreams {
         )
     }
 
-    /** Расшифрованная ссылка и описание потока для построения DASH-манифеста. */
-    private fun format(id: String, o: JSONObject, dur: Long): Pair<String, ItagItem>? {
-        val itagId = o.optInt("itag")
-        if (!ItagItem.isSupported(itagId)) return null
+    /** Готовая ссылка: подпись и параметр n расшифрованы. */
+    private fun plainUrl(id: String, o: JSONObject): String? {
         var url = o.optString("url")
         if (url.isEmpty()) {
-            val cipher = android.net.Uri.parse("?" + o.optString("signatureCipher"))
+            val raw = o.optString("signatureCipher").ifEmpty { o.optString("cipher") }
+            if (raw.isEmpty()) return null
+            val cipher = android.net.Uri.parse("?$raw")
             val s = cipher.getQueryParameter("s") ?: return null
             val sp = cipher.getQueryParameter("sp") ?: "sig"
             val base = cipher.getQueryParameter("url") ?: return null
@@ -255,7 +281,14 @@ object AccountStreams {
                 .appendQueryParameter(sp, YoutubeJavaScriptPlayerManager.deobfuscateSignature(id, s))
                 .build().toString()
         }
-        url = YoutubeJavaScriptPlayerManager.getUrlWithThrottlingParameterDeobfuscated(id, url)
+        return YoutubeJavaScriptPlayerManager.getUrlWithThrottlingParameterDeobfuscated(id, url)
+    }
+
+    /** Расшифрованная ссылка и описание потока для построения DASH-манифеста. */
+    private fun format(id: String, o: JSONObject, dur: Long): Pair<String, ItagItem>? {
+        val itagId = o.optInt("itag")
+        if (!ItagItem.isSupported(itagId)) return null
+        val url = plainUrl(id, o) ?: return null
 
         val item = ItagItem(ItagItem.getItag(itagId))
         item.setBitrate(o.optInt("bitrate"))
