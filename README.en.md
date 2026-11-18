@@ -13,36 +13,24 @@ English · [Русский](README.md)
 
 </div>
 
-## What it is
+## Description
 
-YT Lite is an unofficial YouTube client with account sign-in. Its main goal is minimal battery and data usage: in the background only audio plays, video isn't downloaded, and the modem isn't kept awake for nothing.
+YT Lite is an unofficial YouTube client for Android with account sign-in: home, subscriptions, history, search, channels, comments, likes and subscribing all work as usual. The main difference from the official app is that it's built to use as little battery and data as possible.
 
 > The app interface is in Russian.
 
-## Features
+**How it differs from the official app**
+- **Only audio plays in the background.** As soon as the player screen is closed, video stops being downloaded and decoded. The "audio only" button enables this mode even with the screen open — handy for podcasts and music.
+- **The modem isn't kept busy.** Audio is buffered several minutes ahead, then the modem goes to sleep instead of holding the connection open.
+- **Separate quality for Wi-Fi and mobile data** — e.g. 1080p at home and 480p on the go, no manual switching.
+- **Skips creators' sponsor segments** via [SponsorBlock](https://sponsor.ajay.app).
+- **Nothing runs in the background** while you're not watching: no background syncs, prefetching or notifications.
+- **Clean feeds:** no Shorts, live streams or premieres.
+- **Small app** — about 3 MB versus well over a hundred for the official one.
 
-**Feeds and search**
-- Home (recommendations), subscriptions and history — swipe between tabs, scroll position is kept
-- Search with suggestions and history, channels in results
-- Channel pages, subscribe / unsubscribe
-- Multiple accounts with switching
-
-**Player**
-- Audio-only in the background, plus an "audio only" button while the screen is open
-- Double-tap to seek 5 s (each extra tap adds 5 s)
-- Swipe down to minimize into a mini player; brightness and volume swipes in fullscreen
-- Chapters on the seek bar, clickable timestamps
-- Resume where you left off
-- Skips in-video sponsor segments via [SponsorBlock](https://sponsor.ajay.app)
-- Separate default quality for Wi-Fi and mobile data
-
-**Below the video**
-- Description, like/dislike, comments with replies, posting comments
-- Related videos
-
-**Other**
-- Opens YouTube links from other apps and the share menu
-- Checks for updates by itself
+**What's missing**
+- Shorts, live streams, video downloads, playlists and Watch Later (for now).
+- Russian-only interface.
 
 ## How it saves battery
 
@@ -52,24 +40,6 @@ YT Lite is an unofficial YouTube client with account sign-in. Its main goal is m
 | AAC audio + audio offload | the audio DSP decodes sound while the CPU sleeps |
 | Up to 10-minute buffer | the modem downloads a large chunk and then sleeps for long |
 | No background services or syncs | the app does nothing when you're not using it |
-
-## Install
-
-1. Download the APK from the [latest release](https://github.com/Wydexyt/Ytlite/releases/latest) and install it (allow installs from this source).
-2. **Xiaomi / HyperOS:** app settings → "Battery saver" → "No restrictions", otherwise the system will kill background playback.
-3. **To open YouTube links in YT Lite:** app settings → "Open by default" → enable "Open supported links" and tick the addresses. If the official YouTube app is installed, disable the same option there.
-
-Updates install on top; your sign-in is kept.
-
-## Building
-
-Every push to `main` is built by GitHub Actions and published as a release. Locally:
-
-```bash
-./gradlew assembleRelease
-```
-
-Signing with the permanent key needs the repository secrets `KEYSTORE_B64` and `KEYSTORE_PASSWORD`; without them a local build is signed with the debug key.
 
 ## If something breaks
 
