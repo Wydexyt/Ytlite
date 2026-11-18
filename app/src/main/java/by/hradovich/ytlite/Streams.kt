@@ -281,8 +281,15 @@ object AccountStreams {
                 .appendQueryParameter(sp, YoutubeJavaScriptPlayerManager.deobfuscateSignature(id, s))
                 .build().toString()
         }
-        return YoutubeJavaScriptPlayerManager.getUrlWithThrottlingParameterDeobfuscated(id, url)
+        // Параметр n: NewPipe может не уметь его расшифровать под новый плеер YouTube —
+        // тогда пробуем ссылку как есть (скорость может быть ограничена)
+        return runCatching { YoutubeJavaScriptPlayerManager.getUrlWithThrottlingParameterDeobfuscated(id, url) }
+            .onFailure { if (!nWarned) { nWarned = true; ErrorLog.log("18+ $id: n не расшифрован, ссылка как есть", it) } }
+            .getOrDefault(url)
     }
+
+    @Volatile
+    private var nWarned = false
 
     /** Расшифрованная ссылка и описание потока для построения DASH-манифеста. */
     private fun format(id: String, o: JSONObject, dur: Long): Pair<String, ItagItem>? {
