@@ -147,6 +147,9 @@ class PlaybackService : MediaSessionService() {
                 } catch (e: Exception) {
                     ErrorLog.log("Открытие видео ${mediaItems.firstOrNull()?.mediaId}", e)
                     main.post {
+                        // Не продолжать играть предыдущее видео, раз пользователь открыл другое
+                        player.stop()
+                        player.clearMediaItems()
                         Toast.makeText(this@PlaybackService, "Не удалось открыть видео: ${e.message}", Toast.LENGTH_LONG).show()
                     }
                     f.setException(e)

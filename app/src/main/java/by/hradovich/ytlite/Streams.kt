@@ -148,14 +148,40 @@ object Streams {
  * cookie и не требует PO-токена), расшифровка ссылок — средствами NewPipe.
  */
 object AccountStreams {
-    private const val TV_VERSION = "7.20250312.16.00"
-    private const val TV_UA = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), " +
-        "Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)"
+    /** Варианты ТВ-клиента (как в yt-dlp): Samsung Tizen обходит «Необходимо перезагрузить страницу». */
+    private class Client(val version: String, val ua: String, val device: Map<String, String> = emptyMap())
+
+    private val CLIENTS = listOf(
+        Client(
+            "5.20260707",
+            "Mozilla/5.0 (SMART-TV; Linux; Tizen 2.4.0) AppleWebKit/538.1 (KHTML, like Gecko) Version/2.4.0 TV Safari/538.1",
+            mapOf("deviceMake" to "Samsung", "deviceModel" to "UKS9800", "osName" to "Tizen", "osVersion" to "2.4.0"),
+        ),
+        Client(
+            "7.20260707.07.00",
+            "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), " +
+                "Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)",
+        ),
+    )
 
     fun resolve(id: String): Resolved {
+        var last: Exception? = null
+        for (c in CLIENTS) {
+            try {
+                return resolveWith(id, c)
+            } catch (e: Exception) {
+                last = e
+                ErrorLog.log("18+ $id: клиент ТВ ${c.version}", e)
+            }
+        }
+        throw last ?: IllegalStateException("Видео недоступно")
+    }
+
+    private fun resolveWith(id: String, c: Client): Resolved {
+        val client = JSONObject().put("clientName", "TVHTML5").put("clientVersion", c.version).put("hl", "ru").put("gl", "BY")
+        c.device.forEach { (k, v) -> client.put(k, v) }
         val body = JSONObject()
-            .put("context", JSONObject().put("client", JSONObject()
-                .put("clientName", "TVHTML5").put("clientVersion", TV_VERSION).put("hl", "ru").put("gl", "BY")))
+            .put("context", JSONObject().put("client", client))
             .put("videoId", id)
             .put("contentCheckOk", true)
             .put("racyCheckOk", true)
@@ -165,9 +191,9 @@ object AccountStreams {
         val rb = Request.Builder()
             .url("https://www.youtube.com/youtubei/v1/player?prettyPrint=false")
             .post(body.toString().toRequestBody("application/json".toMediaType()))
-            .header("User-Agent", TV_UA)
+            .header("User-Agent", c.ua)
             .header("X-Youtube-Client-Name", "7")
-            .header("X-Youtube-Client-Version", TV_VERSION)
+            .header("X-Youtube-Client-Version", c.version)
         Auth.headers().forEach { (k, v) -> rb.header(k, v) }
         val j = Net.http.newCall(rb.build()).execute().use { r ->
             if (!r.isSuccessful) throw IllegalStateException("YouTube ответил ${r.code}")

@@ -32,6 +32,13 @@ object Updates {
         val now = System.currentTimeMillis()
         if (!force && now - p.getLong("last", 0) < PERIOD) return
         p.edit().putLong("last", now).apply()
+        fun fail(e: Throwable?) {
+            e?.let { ErrorLog.log("Проверка обновлений", it) }
+            if (force) act.runOnUiThread {
+                if (!act.isFinishing) AlertDialog.Builder(act).setMessage("Не удалось проверить обновления. Попробуйте позже.")
+                    .setPositiveButton("OK", null).show()
+            }
+        }
         Net.io.execute {
             val r = runCatching {
                 Net.http.newCall(
@@ -40,14 +47,14 @@ object Updates {
                         .header("User-Agent", "YTLite")
                         .build()
                 ).execute().use { JSONObject(it.body?.string().orEmpty()) }
-            }.getOrNull() ?: return@execute
+            }.getOrElse { fail(it); return@execute }
             val tag = r.optString("tag_name").removePrefix("v")
-            val latest = parse(tag) ?: return@execute
-            val current = parse(BuildConfig.VERSION_NAME) ?: return@execute
-            val assets = r.optJSONArray("assets") ?: return@execute
+            val latest = parse(tag) ?: return@execute fail(null)
+            val current = parse(BuildConfig.VERSION_NAME) ?: return@execute fail(null)
+            val assets = r.optJSONArray("assets") ?: return@execute fail(null)
             val url = (0 until assets.length()).map { assets.getJSONObject(it) }
                 .firstOrNull { it.optString("name").endsWith(".apk") }
-                ?.optString("browser_download_url") ?: return@execute
+                ?.optString("browser_download_url") ?: return@execute fail(null)
             act.runOnUiThread {
                 if (act.isFinishing) return@runOnUiThread
                 if (compare(latest, current) <= 0) {
