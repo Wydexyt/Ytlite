@@ -63,6 +63,7 @@ class ChannelActivity : Activity() {
                     videos.submit(it.videos.items)
                     continuation = it.videos.continuation
                 }.onFailure {
+                    ErrorLog.log("Канал $id", it)
                     message.text = "Не удалось открыть канал: ${it.message}"
                     message.visibility = View.VISIBLE
                 }

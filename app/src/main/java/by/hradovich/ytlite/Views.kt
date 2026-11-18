@@ -2,6 +2,7 @@ package by.hradovich.ytlite
 
 import android.annotation.SuppressLint
 import android.app.AlertDialog
+import android.widget.PopupMenu
 import android.widget.ProgressBar
 import android.widget.Toast
 import android.content.Context
@@ -61,7 +62,8 @@ fun TextView.bindSubscribe(channelId: String?, subscribed: Boolean) {
             render(target)
             isEnabled = false
             Net.io.execute {
-                val ok = runCatching { InnerTube.subscribe(channelId, target) }.isSuccess
+                val ok = runCatching { InnerTube.subscribe(channelId, target) }
+                    .onFailure { ErrorLog.log("Подписка $channelId", it) }.isSuccess
                 post {
                     isEnabled = true
                     if (!ok) {
@@ -154,6 +156,53 @@ class VideoAdapter(private val onClick: (Video) -> Unit) : RecyclerView.Adapter<
         val ch = v.channelId
         h.avatar.setOnClickListener(if (ch != null) View.OnClickListener { ChannelActivity.open(it.context, ch) } else null)
         h.itemView.setOnClickListener { onClick(v) }
+        h.itemView.setOnLongClickListener { showMenu(it, v); true }
+    }
+
+    /** Меню долгого тапа: «Не интересует», «Поделиться», «Открыть канал». */
+    private fun showMenu(anchor: View, v: Video) {
+        val ctx = anchor.context
+        val menu = PopupMenu(ctx, anchor)
+        if (v.notInterestedToken != null && Auth.loggedIn) menu.menu.add(0, 1, 0, "Не интересует")
+        menu.menu.add(0, 2, 1, "Поделиться")
+        if (v.channelId != null) menu.menu.add(0, 3, 2, "Открыть канал")
+        menu.setOnMenuItemClickListener { item ->
+            when (item.itemId) {
+                1 -> {
+                    remove(v.id)
+                    Toast.makeText(ctx, "Видео скрыто", Toast.LENGTH_SHORT).show()
+                    val token = v.notInterestedToken!!
+                    Net.io.execute {
+                        runCatching { InnerTube.notInterested(token) }.onFailure { ErrorLog.log("Не интересует", it) }
+                    }
+                }
+                2 -> Share.video(ctx, v.id, v.title)
+                3 -> v.channelId?.let { ChannelActivity.open(ctx, it) }
+            }
+            true
+        }
+        menu.show()
+    }
+
+    private fun remove(id: String) {
+        val i = items.indexOfFirst { it.id == id }
+        if (i < 0) return
+        items.removeAt(i)
+        notifyItemRemoved(i)
+    }
+}
+
+object Share {
+    /** Поделиться ссылкой на видео; startMs > 0 — с текущего момента. */
+    fun video(ctx: Context, id: String, title: String?, startMs: Long = 0) {
+        val sec = startMs / 1000
+        val url = "https://youtu.be/$id" + if (sec > 0) "?t=$sec" else ""
+        val send = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(android.content.Intent.EXTRA_TEXT, url)
+            title?.let { putExtra(android.content.Intent.EXTRA_SUBJECT, it) }
+        }
+        ctx.startActivity(android.content.Intent.createChooser(send, "Поделиться"))
     }
 }
 
@@ -174,6 +223,26 @@ interface DragListener {
 class TapOverlay(ctx: Context, private val onSingleTap: () -> Unit) : FrameLayout(ctx) {
     var player: Player? = null
     var drag: DragListener? = null
+    /** Щипок: true — развести пальцы (заполнить экран), false — свести. */
+    var onPinch: ((Boolean) -> Unit)? = null
+
+    private var multiTouch = false
+    private var pinchScale = 1f
+    private val scaler = android.view.ScaleGestureDetector(ctx, object : android.view.ScaleGestureDetector.SimpleOnScaleGestureListener() {
+        override fun onScaleBegin(d: android.view.ScaleGestureDetector): Boolean {
+            pinchScale = 1f
+            return true
+        }
+
+        override fun onScale(d: android.view.ScaleGestureDetector): Boolean {
+            pinchScale *= d.scaleFactor
+            return true
+        }
+
+        override fun onScaleEnd(d: android.view.ScaleGestureDetector) {
+            if (pinchScale > 1.15f) onPinch?.invoke(true) else if (pinchScale < 0.87f) onPinch?.invoke(false)
+        }
+    })
 
     private val slop = ViewConfiguration.get(ctx).scaledTouchSlop
     private val left = label(Gravity.START or Gravity.CENTER_VERTICAL)
@@ -221,6 +290,20 @@ class TapOverlay(ctx: Context, private val onSingleTap: () -> Unit) : FrameLayou
     }
 
     override fun onTouchEvent(e: MotionEvent): Boolean {
+        scaler.onTouchEvent(e)
+        // Два пальца — это щипок: тапы и свайпы до конца жеста не обрабатываем
+        if (e.actionMasked == MotionEvent.ACTION_POINTER_DOWN) {
+            multiTouch = true
+            removeCallbacks(singleTap)
+            if (dragging) {
+                dragging = false
+                drag?.onDragEnd(0f)
+            }
+        }
+        if (multiTouch) {
+            if (e.actionMasked == MotionEvent.ACTION_UP || e.actionMasked == MotionEvent.ACTION_CANCEL) multiTouch = false
+            return true
+        }
         when (e.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 downX = e.x; downY = e.y; downTime = e.eventTime

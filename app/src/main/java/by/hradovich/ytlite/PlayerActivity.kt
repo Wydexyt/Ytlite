@@ -133,6 +133,19 @@ class PlayerActivity : Activity() {
             overlay, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         )
         overlay.drag = dragHandler
+        overlay.onPinch = { fill ->
+            if (isLandscape) {
+                view.resizeMode = if (fill) androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                else androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+                overlay.showInfo(if (fill) "Заполнить экран" else "Исходный размер")
+            }
+        }
+        // Рисуем и в области выреза камеры — иначе в альбомной ориентации видео смещено от центра
+        if (android.os.Build.VERSION.SDK_INT >= 28) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
         settings.setOnClickListener { showSettings() }
 
         val lm = LinearLayoutManager(this)
@@ -249,6 +262,25 @@ class PlayerActivity : Activity() {
         }
     }
 
+    // ---------- поделиться ----------
+
+    private fun share() {
+        val id = detailsFor ?: return
+        val title = current?.title
+        val pos = controller?.takeIf { it.currentMediaItem?.mediaId == id }?.currentPosition ?: 0
+        if (pos < 5_000) {
+            Share.video(this, id, title)
+            return
+        }
+        val s = pos / 1000
+        val t = if (s >= 3600) "%d:%02d:%02d".format(s / 3600, s / 60 % 60, s % 60) else "%d:%02d".format(s / 60, s % 60)
+        AlertDialog.Builder(this)
+            .setItems(arrayOf("Ссылка на видео", "С текущего момента ($t)")) { _, which ->
+                Share.video(this, id, title, if (which == 1) pos else 0)
+            }
+            .show()
+    }
+
     // ---------- лайки ----------
 
     private fun rate(status: String) {
@@ -261,7 +293,7 @@ class PlayerActivity : Activity() {
         likeStatus = status
         header.notifyItemChanged(0)
         Net.io.execute {
-            val ok = runCatching { InnerTube.rate(id, status) }.isSuccess
+            val ok = runCatching { InnerTube.rate(id, status) }.onFailure { ErrorLog.log("Оценка $status", it) }.isSuccess
             if (!ok) runOnUiThread {
                 if (detailsFor == id) {
                     likeStatus = old
@@ -422,7 +454,7 @@ class PlayerActivity : Activity() {
         related.submit(emptyList())
         relatedContinuation = null
         Net.io.execute {
-            val r = runCatching { InnerTube.next(id) }.getOrNull()
+            val r = runCatching { InnerTube.next(id) }.onFailure { ErrorLog.log("Страница видео $id", it) }.getOrNull()
             runOnUiThread {
                 if (detailsFor != id || r == null) return@runOnUiThread
                 current = r
@@ -473,6 +505,7 @@ class PlayerActivity : Activity() {
             val likeCount: TextView = v.findViewById(R.id.likeCount)
             val dislikeBtn: View = v.findViewById(R.id.dislikeBtn)
             val dislikeIcon: ImageView = v.findViewById(R.id.dislikeIcon)
+            val share: View = v.findViewById(R.id.shareBtn)
             val commentsCard: View = v.findViewById(R.id.commentsCard)
             val commentsHeader: TextView = v.findViewById(R.id.commentsHeader)
             val teaserRow: View = v.findViewById(R.id.teaserRow)
@@ -512,6 +545,7 @@ class PlayerActivity : Activity() {
             h.dislikeIcon.setColorFilter(if (likeStatus == "DISLIKE") on else off)
             h.likeBtn.setOnClickListener { rate(if (likeStatus == "LIKE") "INDIFFERENT" else "LIKE") }
             h.dislikeBtn.setOnClickListener { rate(if (likeStatus == "DISLIKE") "INDIFFERENT" else "DISLIKE") }
+            h.share.setOnClickListener { share() }
 
             val hasComments = d != null && d.commentsToken != null
             h.commentsCard.visibility = if (hasComments) View.VISIBLE else View.GONE
@@ -751,7 +785,10 @@ class PlayerActivity : Activity() {
                         updateInput()
                         if (!more && p.items.isEmpty()) showPanelMessage("Комментариев пока нет")
                     }
-                }.onFailure { if (!more) showPanelMessage("Не удалось загрузить комментарии") }
+                }.onFailure {
+                    ErrorLog.log("Комментарии", it)
+                    if (!more) showPanelMessage("Не удалось загрузить комментарии")
+                }
             }
         }
     }
@@ -804,7 +841,7 @@ class PlayerActivity : Activity() {
         Net.io.execute {
             val ok = runCatching {
                 if (replyTo != null) InnerTube.createReply(params, text) else InnerTube.createComment(params, text)
-            }.getOrDefault(false)
+            }.onFailure { ErrorLog.log("Отправка комментария", it) }.getOrDefault(false)
             runOnUiThread {
                 input.isEnabled = true
                 if (!ok) {
@@ -967,6 +1004,9 @@ class PlayerActivity : Activity() {
         }
         playerBox.layoutParams = lp
         view.setFullscreenButtonState(land)
+        if (!land) view.resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
+        // В полноэкранном режиме — под скрытыми системными панелями, чтобы кадр был ровно по центру
+        WindowCompat.setDecorFitsSystemWindows(window, !land)
 
         val ic = WindowCompat.getInsetsController(window, window.decorView)
         if (land) {

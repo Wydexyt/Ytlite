@@ -145,6 +145,7 @@ class PlaybackService : MediaSessionService() {
                         f.set(items)
                     }
                 } catch (e: Exception) {
+                    ErrorLog.log("Открытие видео ${mediaItems.firstOrNull()?.mediaId}", e)
                     main.post {
                         Toast.makeText(this@PlaybackService, "Не удалось открыть видео: ${e.message}", Toast.LENGTH_LONG).show()
                     }
@@ -266,7 +267,7 @@ class PlaybackService : MediaSessionService() {
 
     // ---------- SponsorBlock ----------
 
-    private val segments = ConcurrentHashMap<String, List<LongArray>>()
+    private val segments = ConcurrentHashMap<String, List<Segment>>()
     private val skipMessages = ArrayList<PlayerMessage>()
 
     private fun scheduleSkips() {
@@ -282,11 +283,12 @@ class PlaybackService : MediaSessionService() {
         }
         for (seg in segs) {
             skipMessages += player.createMessage { _, _ ->
-                if (player.currentMediaItem?.mediaId == id && player.currentPosition < seg[1] - 500) {
-                    player.seekTo(seg[1])
-                    Toast.makeText(this, "Пропущена реклама", Toast.LENGTH_SHORT).show()
+                if (Prefs.sponsorBlock && player.currentMediaItem?.mediaId == id && player.currentPosition < seg.end - 500) {
+                    player.seekTo(seg.end)
+                    val what = SponsorBlock.CATEGORIES[seg.category] ?: "вставка"
+                    Toast.makeText(this, "Пропущено: ${what.lowercase()}", Toast.LENGTH_SHORT).show()
                 }
-            }.setLooper(Looper.getMainLooper()).setPosition(seg[0]).setDeleteAfterDelivery(false).send()
+            }.setLooper(Looper.getMainLooper()).setPosition(seg.start).setDeleteAfterDelivery(false).send()
         }
     }
 
@@ -299,6 +301,10 @@ class PlaybackService : MediaSessionService() {
 
     private val watchTracker = object : Player.Listener {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) = scheduleSkips()
+
+        override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+            ErrorLog.log("Воспроизведение ${player.currentMediaItem?.mediaId} (${error.errorCodeName})", error)
+        }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
             if (!isPlaying && player.playbackState != Player.STATE_BUFFERING) saveResume()

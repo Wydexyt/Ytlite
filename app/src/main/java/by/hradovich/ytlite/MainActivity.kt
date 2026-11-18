@@ -34,12 +34,12 @@ import com.google.common.util.concurrent.ListenableFuture
 
 class MainActivity : Activity() {
 
-    private class TabDef(val browseId: String, val needsLogin: Boolean, val navId: Int)
+    private class TabDef(val title: String, val browseId: String, val needsLogin: Boolean, val navId: Int)
 
     private val tabs = listOf(
-        TabDef("FEwhat_to_watch", false, R.id.navHome),
-        TabDef("FEsubscriptions", true, R.id.navSubs),
-        TabDef("FEhistory", true, R.id.navHistory),
+        TabDef("Главная", "FEwhat_to_watch", false, R.id.navHome),
+        TabDef("Подписки", "FEsubscriptions", true, R.id.navSubs),
+        TabDef("История", "FEhistory", true, R.id.navHistory),
     )
 
     private lateinit var pager: ViewPager2
@@ -111,7 +111,7 @@ class MainActivity : Activity() {
 
         // Вкладки: каждая — отдельная лента, живут все три (кэш и позиция сохраняются)
         feeds = tabs.map { t ->
-            Feed(this, pager, ::openVideo, t.needsLogin, "browse") { InnerTube.browse(t.browseId) }
+            Feed(this, t.title, pager, ::openVideo, t.needsLogin, "browse") { InnerTube.browse(t.browseId) }
         }
         pager.offscreenPageLimit = feeds.size
         pager.adapter = object : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
@@ -141,7 +141,7 @@ class MainActivity : Activity() {
         }
 
         // Поиск
-        searchFeed = Feed(this, searchContainer, ::openVideo, false, "search") { InnerTube.search(searchQuery) }
+        searchFeed = Feed(this, "Поиск", searchContainer, ::openVideo, false, "search") { InnerTube.search(searchQuery) }
         searchContainer.addView(searchFeed.root, 0)
         suggestions.layoutManager = LinearLayoutManager(this)
         suggestions.adapter = suggestAdapter
@@ -178,6 +178,8 @@ class MainActivity : Activity() {
 
         shownAccount = Auth.active?.id
         navItems.forEachIndexed { i, v -> v.alpha = if (i == 0) 1f else 0.55f }
+        // Сначала Главная, сразу после неё — остальные вкладки (только списки, превью — по мере показа)
+        feeds[0].onFirstLoad = { feeds.drop(1).forEach { if (!it.loaded) it.load() } }
         feeds[0].load()
         Updates.check(this)
     }
@@ -313,7 +315,7 @@ class MainActivity : Activity() {
         shownAccount = Auth.active?.id
         feeds.forEach { it.reset() }
         searchFeed.reset()
-        feeds[pager.currentItem].load()
+        feeds.forEach { it.load() }
         if (searchQuery.isNotEmpty()) searchFeed.load()
     }
 
@@ -329,8 +331,9 @@ class MainActivity : Activity() {
         if (active != null) menu.menu.add(1, LOGOUT, 101, "Выйти")
         menu.menu.add(2, QUALITY_WIFI, 102, "Качество (Wi-Fi): ${qualityName(Prefs.qualityWifi)}")
         menu.menu.add(2, QUALITY_MOBILE, 103, "Качество (моб. сеть): ${qualityName(Prefs.qualityMobile)}")
-        menu.menu.add(2, SPONSOR, 104, "SponsorBlock: ${if (Prefs.sponsorBlock) "вкл" else "выкл"}")
-        menu.menu.add(3, UPDATE, 105, "Проверить обновления (v${BuildConfig.VERSION_CODE})")
+        menu.menu.add(2, SPONSOR, 104, "SponsorBlock…")
+        menu.menu.add(3, LOG, 105, "Журнал ошибок")
+        menu.menu.add(3, UPDATE, 106, "Проверить обновления (${BuildConfig.VERSION_NAME})")
         menu.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 ADD -> startActivity(Intent(this, LoginActivity::class.java))
@@ -345,14 +348,9 @@ class MainActivity : Activity() {
                     .show()
                 QUALITY_WIFI -> chooseQuality(true)
                 QUALITY_MOBILE -> chooseQuality(false)
-                SPONSOR -> {
-                    Prefs.sponsorBlock = !Prefs.sponsorBlock
-                    android.widget.Toast.makeText(
-                        this, "Пропуск рекламных вставок ${if (Prefs.sponsorBlock) "включён" else "выключен"}",
-                        android.widget.Toast.LENGTH_SHORT
-                    ).show()
-                }
+                SPONSOR -> showSponsorSettings()
                 UPDATE -> Updates.check(this, force = true)
+                LOG -> showErrorLog()
                 else -> accounts.getOrNull(item.itemId)?.let {
                     if (it.id != active) {
                         Auth.switchTo(it.id)
@@ -364,6 +362,77 @@ class MainActivity : Activity() {
             true
         }
         menu.show()
+    }
+
+    /** Настройки SponsorBlock: общий переключатель и категории. */
+    private fun showSponsorSettings() {
+        val pad = (20 * resources.displayMetrics.density).toInt()
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(pad, pad / 2, pad, 0)
+        }
+        val main = android.widget.Switch(this).apply {
+            text = "Пропускать автоматически"
+            textSize = 16f
+            isChecked = Prefs.sponsorBlock
+            setPadding(0, pad / 2, 0, pad / 2)
+        }
+        box.addView(main)
+        box.addView(TextView(this).apply {
+            text = "Что пропускать"
+            setTextColor(getColor(R.color.sub))
+            textSize = 13f
+            setPadding(0, pad / 2, 0, pad / 4)
+        })
+        val selected = Prefs.sponsorCategories.toMutableSet()
+        val checks = SponsorBlock.CATEGORIES.map { (key, label) ->
+            android.widget.CheckBox(this).apply {
+                text = label
+                isChecked = key in selected
+                isEnabled = main.isChecked
+                setOnCheckedChangeListener { _, c -> if (c) selected += key else selected -= key }
+                box.addView(this)
+            }
+        }
+        main.setOnCheckedChangeListener { _, c -> checks.forEach { it.isEnabled = c } }
+        box.addView(TextView(this).apply {
+            text = "Данные — сообщество SponsorBlock (sponsor.ajay.app)"
+            setTextColor(getColor(R.color.sub))
+            textSize = 11f
+            setPadding(0, pad / 2, 0, pad / 2)
+        })
+        AlertDialog.Builder(this)
+            .setTitle("SponsorBlock")
+            .setView(android.widget.ScrollView(this).apply { addView(box) })
+            .setPositiveButton("Сохранить") { _, _ ->
+                Prefs.sponsorBlock = main.isChecked
+                Prefs.sponsorCategories = selected
+            }
+            .setNegativeButton("Отмена", null)
+            .show()
+    }
+
+    private fun showErrorLog() {
+        val text = ErrorLog.read()
+        val pad = (16 * resources.displayMetrics.density).toInt()
+        val body = TextView(this).apply {
+            this.text = text.ifEmpty { "Ошибок нет" }
+            textSize = 11f
+            typeface = android.graphics.Typeface.MONOSPACE
+            setTextIsSelectable(true)
+            setPadding(pad, pad, pad, pad)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Журнал ошибок")
+            .setView(android.widget.ScrollView(this).apply { addView(body) })
+            .setPositiveButton("Скопировать всё") { _, _ ->
+                getSystemService(android.content.ClipboardManager::class.java)
+                    .setPrimaryClip(android.content.ClipData.newPlainText("YT Lite errors", ErrorLog.export()))
+                android.widget.Toast.makeText(this, "Журнал скопирован", android.widget.Toast.LENGTH_SHORT).show()
+            }
+            .setNeutralButton("Очистить") { _, _ -> ErrorLog.clear() }
+            .setNegativeButton("Закрыть", null)
+            .show()
     }
 
     private fun chooseQuality(wifi: Boolean) {
@@ -418,5 +487,6 @@ class MainActivity : Activity() {
         private const val QUALITY_MOBILE = Menu.FIRST + 1003
         private const val SPONSOR = Menu.FIRST + 1004
         private const val UPDATE = Menu.FIRST + 1005
+        private const val LOG = Menu.FIRST + 1006
     }
 }

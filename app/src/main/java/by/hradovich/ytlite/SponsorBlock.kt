@@ -4,25 +4,41 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import org.json.JSONArray
 
-/** SponsorBlock (sponsor.ajay.app): отрезки с рекламными вставками авторов. */
-object SponsorBlock {
-    private const val CATEGORIES = "[\"sponsor\",\"selfpromo\",\"interaction\"]"
+class Segment(val start: Long, val end: Long, val category: String)
 
-    /** Список [начало, конец] в миллисекундах; пусто, если отрезков нет или сервис недоступен. */
-    fun segments(videoId: String): List<LongArray> = runCatching {
+/** SponsorBlock (sponsor.ajay.app): отрезки с рекламными вставками и прочим, что можно пропустить. */
+object SponsorBlock {
+    /** Категории SponsorBlock и их названия. */
+    val CATEGORIES = linkedMapOf(
+        "sponsor" to "Спонсорская реклама",
+        "selfpromo" to "Самореклама автора",
+        "interaction" to "«Подпишитесь, поставьте лайк»",
+        "intro" to "Заставка",
+        "outro" to "Концовка, титры",
+        "preview" to "Превью и повторы",
+        "music_offtopic" to "Не-музыка в клипах",
+        "filler" to "Отступления не по теме",
+    )
+    val DEFAULT = setOf("sponsor", "selfpromo", "interaction")
+
+    /** Отрезки выбранных категорий; пусто, если их нет или сервис недоступен. */
+    fun segments(videoId: String): List<Segment> = runCatching {
+        val cats = Prefs.sponsorCategories
+        if (cats.isEmpty()) return@runCatching emptyList()
         val url = "https://sponsor.ajay.app/api/skipSegments".toHttpUrl().newBuilder()
             .addQueryParameter("videoID", videoId)
-            .addQueryParameter("categories", CATEGORIES)
+            .addQueryParameter("categories", JSONArray(cats.toList()).toString())
             .build()
         Net.http.newCall(Request.Builder().url(url).header("User-Agent", "YTLite").build()).execute().use { r ->
             if (!r.isSuccessful) return@use emptyList()
             val a = JSONArray(r.body?.string().orEmpty())
             (0 until a.length()).mapNotNull { i ->
-                val seg = a.optJSONObject(i)?.optJSONArray("segment") ?: return@mapNotNull null
+                val o = a.optJSONObject(i) ?: return@mapNotNull null
+                val seg = o.optJSONArray("segment") ?: return@mapNotNull null
                 val start = (seg.optDouble(0) * 1000).toLong()
                 val end = (seg.optDouble(1) * 1000).toLong()
-                if (end - start >= 1000) longArrayOf(start, end) else null
-            }.sortedBy { it[0] }
+                if (end - start >= 1000) Segment(start, end, o.optString("category")) else null
+            }.sortedBy { it.start }
         }
     }.getOrDefault(emptyList())
 }

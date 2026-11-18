@@ -21,6 +21,7 @@ import androidx.swiperefreshlayout.widget.SwipeRefreshLayout
 /** Одна лента (вкладка или результаты поиска): список, догрузка, обновление свайпом. */
 class Feed(
     private val act: Activity,
+    private val name: String,
     parent: ViewGroup,
     onOpen: (Video) -> Unit,
     private val needsLogin: Boolean,
@@ -40,6 +41,9 @@ class Feed(
     private var generation = 0
     var loaded = false
         private set
+
+    /** Вызывается один раз после первой загрузки (успешной или нет). */
+    var onFirstLoad: (() -> Unit)? = null
 
     init {
         list.layoutManager = lm
@@ -97,6 +101,7 @@ class Feed(
                 if (g != generation) return@runOnUiThread
                 loading = false
                 loaded = true
+                onFirstLoad?.let { cb -> onFirstLoad = null; act.window.decorView.post(cb) }
                 progress.visibility = View.GONE
                 refresh.isRefreshing = false
                 r.onSuccess {
@@ -104,7 +109,10 @@ class Feed(
                     continuation = it.continuation
                     list.scrollToPosition(0)
                     if (it.items.isEmpty()) showMessage("Здесь пусто")
-                }.onFailure { showMessage("Ошибка: ${it.message}") }
+                }.onFailure {
+                    ErrorLog.log("Лента: $name", it)
+                    showMessage("Ошибка: ${it.message}")
+                }
             }
         }
     }
@@ -122,7 +130,10 @@ class Feed(
                 r.onSuccess {
                     adapter.append(it.items)
                     continuation = it.continuation
-                }.onFailure { continuation = null }
+                }.onFailure {
+                    ErrorLog.log("Лента: $name (догрузка)", it)
+                    continuation = null
+                }
             }
         }
     }

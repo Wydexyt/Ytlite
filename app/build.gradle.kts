@@ -13,10 +13,11 @@ android {
         applicationId = "by.hradovich.ytlite"
         minSdk = 26
         targetSdk = 35
-        // Номер сборки GitHub Actions = номер версии (по нему приложение ищет обновления)
+        // versionCode — номер сборки GitHub Actions (для Android), versionName — 0.1.x из version.properties
         val build = System.getenv("BUILD_NUMBER")?.toIntOrNull() ?: 1
+        val v = java.util.Properties().apply { rootProject.file("version.properties").inputStream().use { load(it) } }
         versionCode = build
-        versionName = "v$build"
+        versionName = "${v.getProperty("major")}.${v.getProperty("minor")}.${build - v.getProperty("patchOffset").toInt()}"
     }
 
     buildFeatures { buildConfig = true }

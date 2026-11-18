@@ -1,6 +1,12 @@
 package by.hradovich.ytlite
 
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONObject
 import org.schabi.newpipe.extractor.MediaFormat
+import org.schabi.newpipe.extractor.exceptions.AgeRestrictedContentException
+import org.schabi.newpipe.extractor.services.youtube.YoutubeJavaScriptPlayerManager
 import org.schabi.newpipe.extractor.ServiceList
 import org.schabi.newpipe.extractor.services.youtube.ItagItem
 import org.schabi.newpipe.extractor.services.youtube.dashmanifestcreators.YoutubeOtfDashManifestCreator
@@ -67,7 +73,18 @@ object Streams {
     }
 
     private fun resolve(id: String): Resolved {
-        val info = StreamInfo.getInfo(ServiceList.YouTube, "https://www.youtube.com/watch?v=$id")
+        val info = try {
+            StreamInfo.getInfo(ServiceList.YouTube, "https://www.youtube.com/watch?v=$id")
+        } catch (e: Exception) {
+            val age = e is AgeRestrictedContentException ||
+                e.message?.contains("age", ignoreCase = true) == true ||
+                e.cause is AgeRestrictedContentException
+            if (!age) throw e
+            // Видео 18+: NewPipe ходит анонимно, поэтому запрашиваем от имени аккаунта
+            if (!Auth.loggedIn) throw IllegalStateException("Видео 18+: войдите в аккаунт, чтобы его посмотреть")
+            ErrorLog.log("18+ $id: пробую через аккаунт", e)
+            return AccountStreams.resolve(id)
+        }
         val dur = info.duration
 
         // Звук: оригинальная дорожка (не автодубляж), AAC — его чаще умеет декодировать
@@ -123,5 +140,110 @@ object Streams {
                 else -> null
             }
         }.getOrNull()
+    }
+}
+
+/**
+ * Потоки для видео 18+: запрос /player от имени аккаунта (клиент YouTube для ТВ, он принимает
+ * cookie и не требует PO-токена), расшифровка ссылок — средствами NewPipe.
+ */
+object AccountStreams {
+    private const val TV_VERSION = "7.20250312.16.00"
+    private const val TV_UA = "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/25.lts.30.1034943-gold (unlike Gecko), " +
+        "Unknown_TV_Unknown_0/Unknown (Unknown, Unknown)"
+
+    fun resolve(id: String): Resolved {
+        val body = JSONObject()
+            .put("context", JSONObject().put("client", JSONObject()
+                .put("clientName", "TVHTML5").put("clientVersion", TV_VERSION).put("hl", "ru").put("gl", "BY")))
+            .put("videoId", id)
+            .put("contentCheckOk", true)
+            .put("racyCheckOk", true)
+            .put("playbackContext", JSONObject().put("contentPlaybackContext", JSONObject()
+                .put("signatureTimestamp", YoutubeJavaScriptPlayerManager.getSignatureTimestamp(id))
+                .put("html5Preference", "HTML5_PREF_WANTS")))
+        val rb = Request.Builder()
+            .url("https://www.youtube.com/youtubei/v1/player?prettyPrint=false")
+            .post(body.toString().toRequestBody("application/json".toMediaType()))
+            .header("User-Agent", TV_UA)
+            .header("X-Youtube-Client-Name", "7")
+            .header("X-Youtube-Client-Version", TV_VERSION)
+        Auth.headers().forEach { (k, v) -> rb.header(k, v) }
+        val j = Net.http.newCall(rb.build()).execute().use { r ->
+            if (!r.isSuccessful) throw IllegalStateException("YouTube ответил ${r.code}")
+            JSONObject(r.body?.string().orEmpty())
+        }
+        val ps = j.optJSONObject("playabilityStatus")
+        if (ps?.optString("status") != "OK") {
+            throw IllegalStateException("Видео недоступно: " + (ps?.optString("reason")?.ifEmpty { null } ?: ps?.optString("status")))
+        }
+        val details = j.optJSONObject("videoDetails")
+        val dur = details?.optString("lengthSeconds")?.toLongOrNull() ?: 0
+        val formats = j.optJSONObject("streamingData")?.optJSONArray("adaptiveFormats")
+            ?: throw IllegalStateException("Нет потоков")
+
+        class F(val o: JSONObject, val url: String, val itag: ItagItem)
+        val list = ArrayList<F>()
+        for (i in 0 until formats.length()) {
+            val o = formats.optJSONObject(i) ?: continue
+            val f = runCatching { format(id, o, dur) }.getOrNull() ?: continue
+            list += f.let { (url, item) -> F(o, url, item) }
+        }
+        val videos = list.filter { it.o.optString("mimeType").startsWith("video/") && it.o.optInt("height") > 0 }
+            .groupBy { it.o.optInt("height") }
+            .values.mapNotNull { same -> same.maxWithOrNull(compareBy<F>({ it.o.optInt("fps") }, { it.o.optString("mimeType").startsWith("video/webm") })) }
+            .sortedByDescending { it.o.optInt("height") }
+        val audio = list.filter { it.o.optString("mimeType").startsWith("audio/") }
+            .sortedWith(
+                compareByDescending<F> { it.o.optJSONObject("audioTrack")?.optBoolean("audioIsDefault") ?: true }
+                    .thenByDescending { it.o.optString("mimeType").startsWith("audio/mp4") }
+                    .thenByDescending { it.o.optInt("bitrate") }
+            ).firstOrNull()
+        if (videos.isEmpty() || audio == null) throw IllegalStateException("Нет подходящих потоков")
+
+        fun src(f: F) = Src(
+            f.url, runCatching { YoutubeProgressiveDashManifestCreator.fromProgressiveStreamingUrl(f.url, f.itag, dur) }.getOrNull(),
+            f.o.optInt("width"), f.o.optInt("height")
+        )
+        val thumbs = details?.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
+        return Resolved(
+            videos = videos.map { src(it) },
+            audio = src(audio),
+            title = details?.optString("title").orEmpty(),
+            uploader = details?.optString("author").orEmpty(),
+            thumb = thumbs?.let { it.optJSONObject(it.length() - 1)?.optString("url") },
+        )
+    }
+
+    /** Расшифрованная ссылка и описание потока для построения DASH-манифеста. */
+    private fun format(id: String, o: JSONObject, dur: Long): Pair<String, ItagItem>? {
+        val itagId = o.optInt("itag")
+        if (!ItagItem.isSupported(itagId)) return null
+        var url = o.optString("url")
+        if (url.isEmpty()) {
+            val cipher = android.net.Uri.parse("?" + o.optString("signatureCipher"))
+            val s = cipher.getQueryParameter("s") ?: return null
+            val sp = cipher.getQueryParameter("sp") ?: "sig"
+            val base = cipher.getQueryParameter("url") ?: return null
+            url = android.net.Uri.parse(base).buildUpon()
+                .appendQueryParameter(sp, YoutubeJavaScriptPlayerManager.deobfuscateSignature(id, s))
+                .build().toString()
+        }
+        url = YoutubeJavaScriptPlayerManager.getUrlWithThrottlingParameterDeobfuscated(id, url)
+
+        val item = ItagItem(ItagItem.getItag(itagId))
+        item.setBitrate(o.optInt("bitrate"))
+        item.setWidth(o.optInt("width"))
+        item.setHeight(o.optInt("height"))
+        if (o.has("fps")) item.setFps(o.optInt("fps"))
+        o.optJSONObject("initRange")?.let { item.setInitStart(it.optString("start").toInt()); item.setInitEnd(it.optString("end").toInt()) }
+        o.optJSONObject("indexRange")?.let { item.setIndexStart(it.optString("start").toInt()); item.setIndexEnd(it.optString("end").toInt()) }
+        o.optString("contentLength").toLongOrNull()?.let { item.setContentLength(it) }
+        item.setApproxDurationMs(o.optString("approxDurationMs").toLongOrNull() ?: (dur * 1000))
+        item.setQuality(o.optString("quality"))
+        Regex("codecs=\"([^\"]+)\"").find(o.optString("mimeType"))?.let { item.setCodec(it.groupValues[1]) }
+        o.optString("audioSampleRate").toIntOrNull()?.let { item.setSampleRate(it) }
+        if (o.has("audioChannels")) item.setAudioChannels(o.optInt("audioChannels"))
+        return url to item
     }
 }

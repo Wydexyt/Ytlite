@@ -1,6 +1,9 @@
 package by.hradovich.ytlite
 
 import android.app.Application
+import coil.ImageLoader
+import coil.ImageLoaderFactory
+import coil.disk.DiskCache
 import android.content.Context
 import android.content.SharedPreferences
 import org.json.JSONArray
@@ -16,9 +19,21 @@ import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 
-class App : Application() {
+class App : Application(), ImageLoaderFactory {
+    /** Превью и аватары: общий OkHttp и кэш на диске не больше 100 МБ. */
+    override fun newImageLoader(): ImageLoader = ImageLoader.Builder(this)
+        .okHttpClient(Net.http)
+        .diskCache {
+            DiskCache.Builder()
+                .directory(cacheDir.resolve("image_cache"))
+                .maxSizeBytes(100L * 1024 * 1024)
+                .build()
+        }
+        .build()
+
     override fun onCreate() {
         super.onCreate()
+        ErrorLog.init(this)
         Prefs.init(this)
         Auth.init(this)
         NewPipe.init(NpDownloader)
@@ -47,6 +62,10 @@ object Prefs {
     var sponsorBlock: Boolean
         get() = p.getBoolean("sponsorBlock", true)
         set(v) = p.edit().putBoolean("sponsorBlock", v).apply()
+
+    var sponsorCategories: Set<String>
+        get() = p.getStringSet("sponsorCategories", null)?.toSet() ?: SponsorBlock.DEFAULT
+        set(v) = p.edit().putStringSet("sponsorCategories", v).apply()
 
     // ---------- продолжение с места остановки ----------
 

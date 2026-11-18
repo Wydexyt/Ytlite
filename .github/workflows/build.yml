@@ -37,6 +37,13 @@ jobs:
           fi
           echo "$KEYSTORE_B64" | tr -d ' \r\n' | base64 -d > app/release.jks
 
+      - name: Version
+        run: |
+          major=$(grep '^major=' version.properties | cut -d= -f2)
+          minor=$(grep '^minor=' version.properties | cut -d= -f2)
+          offset=$(grep '^patchOffset=' version.properties | cut -d= -f2)
+          echo "VERSION=${major}.${minor}.$(( ${{ github.run_number }} - offset ))" >> "$GITHUB_ENV"
+
       - name: Build release APK
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -44,25 +51,24 @@ jobs:
         run: |
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon --stacktrace
-          cp app/build/outputs/apk/release/app-release.apk "YTLite-v${BUILD_NUMBER}.apk"
+          cp app/build/outputs/apk/release/app-release.apk "YTLite-${VERSION}.apk"
 
       - uses: actions/upload-artifact@v4
         with:
           name: app-release
-          path: YTLite-v*.apk
+          path: YTLite-*.apk
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-          BUILD_NUMBER: ${{ github.run_number }}
         run: |
-          # Описание релиза — раздел CHANGELOG.md с заголовком, где есть "(vN)"; иначе — сообщение коммита
-          awk -v tag="(v${BUILD_NUMBER})" '
-            /^## / { if (found) exit; if (index($0, tag)) { found=1; next } }
+          # Описание релиза — раздел CHANGELOG.md "## <версия>"; иначе — сообщение коммита
+          awk -v ver="## ${VERSION} " '
+            /^## / { if (found) exit; if (index($0, ver) == 1) { found=1; next } }
             found { print }
           ' CHANGELOG.md > notes.md || true
           [ -s notes.md ] || git log -1 --pretty=%s > notes.md
           printf '\n---\nУстановка: скачайте APK ниже и установите поверх предыдущей версии.\n' >> notes.md
-          gh release create "v${BUILD_NUMBER}" "YTLite-v${BUILD_NUMBER}.apk" \
-            --title "YT Lite v${BUILD_NUMBER}" \
+          gh release create "v${VERSION}" "YTLite-${VERSION}.apk" \
+            --title "YT Lite ${VERSION}" \
             --notes-file notes.md

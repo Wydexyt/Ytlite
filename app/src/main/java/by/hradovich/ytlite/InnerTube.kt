@@ -22,6 +22,7 @@ data class Video(
     val watched: Int = 0,          // % просмотрено (из аккаунта YouTube)
     val isChannel: Boolean = false, // карточка канала в поиске (id = channelId)
     val subscribed: Boolean = false,
+    val notInterestedToken: String? = null,
 )
 
 class ChannelInfo(
@@ -365,6 +366,23 @@ object InnerTube {
         )
     }
 
+    /** Токен пункта «Не интересует» из меню карточки. */
+    private fun notInterested(items: JSONArray?): String? {
+        if (items == null) return null
+        for (i in 0 until items.length()) {
+            val item = items.opt(i) ?: continue
+            val s = item.toString()
+            if (s.contains("NOT_INTERESTED") || s.contains("Не интересует") || s.contains("Not interested")) {
+                find(item, "feedbackEndpoint")?.optString("feedbackToken")?.takeIf { t -> t.isNotEmpty() }?.let { t -> return t }
+            }
+        }
+        return null
+    }
+
+    fun notInterested(token: String) {
+        post("feedback", JSONObject().put("feedbackTokens", JSONArray().put(token)).put("isFeedbackTokenUnencrypted", false))
+    }
+
     // ---------- подсказки поиска ----------
 
     fun suggestions(q: String): List<String> {
@@ -483,6 +501,7 @@ object InnerTube {
             channelId = (v.optJSONObject("ownerText") ?: v.optJSONObject("shortBylineText") ?: v.optJSONObject("longBylineText"))
                 ?.let { find(it, "browseEndpoint") }?.optString("browseId")?.takeIf { it.isNotEmpty() },
             watched = find(v, "thumbnailOverlayResumePlaybackRenderer")?.optInt("percentDurationWatched") ?: 0,
+            notInterestedToken = notInterested(v.optJSONObject("menu")?.let { findArray(it, "items") }),
         )
     }
 
@@ -528,6 +547,7 @@ object InnerTube {
             channelId = md?.optJSONObject("image")?.let { find(it, "browseEndpoint") }?.optString("browseId")
                 ?.takeIf { it.isNotEmpty() },
             watched = img?.let { find(it, "thumbnailOverlayProgressBarViewModel") }?.optInt("startPercent") ?: 0,
+            notInterestedToken = notInterested(findArray(l, "listItems")),
         )
     }
 
