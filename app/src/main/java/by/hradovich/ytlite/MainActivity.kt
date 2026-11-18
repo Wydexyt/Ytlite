@@ -63,7 +63,7 @@ class MainActivity : Activity() {
 
     // страницы поверх лент
     private lateinit var pagesBox: FrameLayout
-    private val pages = ArrayList<Page>()
+    private val pages = ArrayList<AppPage>()
 
     // поиск
     private lateinit var header: View
@@ -392,14 +392,14 @@ class MainActivity : Activity() {
 
     fun openStats() = openPage(StatsPage(this, pagesBox))
 
-    private fun openPage(p: Page) {
+    private fun openPage(p: AppPage) {
         pages += p
         pagesBox.addView(p.view)
         p.view.translationX = resources.displayMetrics.widthPixels.toFloat()
         p.view.animate().translationX(0f).setDuration(220).setInterpolator(DecelerateInterpolator(2f))
     }
 
-    fun closePage(p: Page) {
+    fun closePage(p: AppPage) {
         pages.remove(p)
         p.view.animate().translationX(p.view.width.toFloat()).setDuration(200)
             .withEndAction { pagesBox.removeView(p.view) }

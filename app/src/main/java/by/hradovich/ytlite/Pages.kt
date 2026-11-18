@@ -12,7 +12,7 @@ import androidx.recyclerview.widget.RecyclerView
 import coil.load
 
 /** Страница поверх лент внутри главного окна (канал, статистика). Мини-плеер и вкладки остаются видны. */
-interface Page {
+interface AppPage {
     val view: View
     /** Обработать «назад» внутри страницы; false — закрыть страницу. */
     fun onBack(): Boolean = false
@@ -20,7 +20,7 @@ interface Page {
 }
 
 /** Страница канала: шапка с подпиской и видео с догрузкой. */
-class ChannelPage(private val act: MainActivity, parent: ViewGroup, private val id: String) : Page {
+class ChannelPage(private val act: MainActivity, parent: ViewGroup, private val id: String) : AppPage {
     override val view: View = LayoutInflater.from(act).inflate(R.layout.page_channel, parent, false)
     private val list: RecyclerView = view.findViewById(R.id.list)
     private val progress: ProgressBar = view.findViewById(R.id.progress)
@@ -110,7 +110,7 @@ class ChannelPage(private val act: MainActivity, parent: ViewGroup, private val 
 }
 
 /** Экран «Статистика»: время просмотра, фон, сэкономленный трафик, SponsorBlock, каналы. */
-class StatsPage(private val act: MainActivity, parent: ViewGroup) : Page {
+class StatsPage(private val act: MainActivity, parent: ViewGroup) : AppPage {
     override val view: View = LayoutInflater.from(act).inflate(R.layout.page_stats, parent, false)
     private val body: android.widget.LinearLayout = view.findViewById(R.id.statsBody)
     private val chips = listOf<TextView>(view.findViewById(R.id.pWeek), view.findViewById(R.id.pMonth), view.findViewById(R.id.pAll))
