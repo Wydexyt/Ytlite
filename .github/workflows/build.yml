@@ -3,6 +3,12 @@ name: Build APK
 on:
   push:
     branches: [main]
+    # изменения только в документации не собирают новую версию
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - "LICENSE"
+      - ".github/ISSUE_TEMPLATE/**"
   workflow_dispatch:
 
 permissions:
@@ -50,6 +56,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           BUILD_NUMBER: ${{ github.run_number }}
         run: |
+          # Описание релиза — раздел CHANGELOG.md с заголовком, где есть "(vN)"; иначе — сообщение коммита
+          awk -v tag="(v${BUILD_NUMBER})" '
+            /^## / { if (found) exit; if (index($0, tag)) { found=1; next } }
+            found { print }
+          ' CHANGELOG.md > notes.md || true
+          [ -s notes.md ] || git log -1 --pretty=%s > notes.md
+          printf '\n---\nУстановка: скачайте APK ниже и установите поверх предыдущей версии.\n' >> notes.md
           gh release create "v${BUILD_NUMBER}" "YTLite-v${BUILD_NUMBER}.apk" \
             --title "YT Lite v${BUILD_NUMBER}" \
-            --notes "$(git log -1 --pretty=%s)"
+            --notes-file notes.md

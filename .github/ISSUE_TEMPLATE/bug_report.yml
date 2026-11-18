@@ -1,0 +1,33 @@
+name: Ошибка
+description: Что-то работает не так
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: Что случилось
+      description: Что вы делали и что пошло не так. Если есть — приложите скриншот или запись экрана.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Как должно быть
+  - type: input
+    id: link
+    attributes:
+      label: Ссылка на видео
+      description: Если ошибка связана с конкретным видео или каналом
+  - type: input
+    id: version
+    attributes:
+      label: Версия YT Lite
+      description: Меню аккаунта → «Проверить обновления (vN)»
+      placeholder: v4
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Телефон и версия Android
+      placeholder: Xiaomi 14, HyperOS 2, Android 15
