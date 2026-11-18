@@ -10,11 +10,29 @@ import org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper
 import java.io.IOException
 import kotlin.math.abs
 
-data class Video(val id: String, val title: String, val channel: String, val meta: String, val thumb: String?)
+data class Video(
+    val id: String,
+    val title: String,
+    val channel: String,
+    val meta: String,      // просмотры · дата
+    val duration: String,
+    val thumb: String?,
+    val avatar: String?,
+)
 
 class Page(val items: List<Video>, val continuation: String?)
 
-/** Авторизованные запросы к внутреннему API YouTube: ленты, поиск, отметка просмотров. */
+class Details(
+    val title: String,
+    val meta: String,
+    val channel: String,
+    val avatar: String?,
+    val subs: String,
+    val description: String,
+    val related: Page,
+)
+
+/** Авторизованные запросы к внутреннему API YouTube: ленты, поиск, рекомендации, история. */
 object InnerTube {
     private const val BASE = "https://www.youtube.com/youtubei/v1/"
     private const val FALLBACK_VERSION = "2.20251110.01.00"
@@ -22,7 +40,7 @@ object InnerTube {
     @Volatile
     private var version: String? = null
 
-    private fun clientVersion(): String = version
+    fun clientVersion(): String = version
         ?: (runCatching { YoutubeParsingHelper.getClientVersion() }.getOrNull() ?: FALLBACK_VERSION)
             .also { version = it }
 
@@ -57,7 +75,40 @@ object InnerTube {
     fun search(query: String): Page =
         parse(post("search", JSONObject().put("query", query).put("params", "EgIQAQ%3D%3D")))
 
-    fun more(endpoint: String, token: String): Page = parse(post(endpoint, JSONObject().put("continuation", token)))
+    fun more(endpoint: String, token: String, exclude: String? = null): Page {
+        val p = parse(post(endpoint, JSONObject().put("continuation", token)))
+        return if (exclude == null) p else Page(p.items.filter { it.id != exclude }, p.continuation)
+    }
+
+    /** Страница видео: описание, канал и рекомендации. */
+    fun next(videoId: String): Details {
+        val j = post("next", JSONObject().put("videoId", videoId))
+        val p = find(j, "videoPrimaryInfoRenderer")
+        val s = find(j, "videoSecondaryInfoRenderer")
+        val owner = s?.optJSONObject("owner")?.optJSONObject("videoOwnerRenderer")
+        val views = p?.optJSONObject("viewCount")?.optJSONObject("videoViewCountRenderer")
+            ?.let { (it.optJSONObject("viewCount") ?: it.optJSONObject("shortViewCount")).text() }.orEmpty()
+        val date = p?.optJSONObject("dateText").text()
+        val desc = s?.optJSONObject("attributedDescription")?.optString("content")?.takeIf { it.isNotEmpty() }
+            ?: s?.optJSONObject("description").text()
+        val related = parse(j)
+        return Details(
+            title = p?.optJSONObject("title").text(),
+            meta = listOf(views, date).filter { it.isNotBlank() }.joinToString(" · "),
+            channel = owner?.optJSONObject("title").text(),
+            avatar = pickThumb(owner?.optJSONObject("thumbnail")?.optJSONArray("thumbnails"), 88),
+            subs = owner?.optJSONObject("subscriberCountText").text(),
+            description = desc,
+            related = Page(related.items.filter { it.id != videoId }, related.continuation),
+        )
+    }
+
+    /** Имя и аватар активного аккаунта. */
+    fun accountInfo(): Pair<String, String?>? {
+        val h = find(post("account/account_menu", JSONObject()), "activeAccountHeaderRenderer") ?: return null
+        val name = h.optJSONObject("accountName").text()
+        return name to pickThumb(h.optJSONObject("accountPhoto")?.optJSONArray("thumbnails"), 88)
+    }
 
     /** Ссылки статистики, через которые YouTube записывает просмотр в историю. */
     fun tracking(videoId: String): Pair<String?, String?> {
@@ -79,7 +130,10 @@ object InnerTube {
     // ---------- разбор ответов ----------
 
     private val VIDEO_KEYS = listOf("videoRenderer", "gridVideoRenderer", "compactVideoRenderer")
-    private val SKIP = setOf("responseContext", "frameworkUpdates", "topbar", "reelShelfRenderer", "trackingParams")
+    private val SKIP = setOf(
+        "responseContext", "frameworkUpdates", "topbar", "reelShelfRenderer",
+        "trackingParams", "playerOverlays", "videoPrimaryInfoRenderer", "videoSecondaryInfoRenderer"
+    )
 
     private fun parse(root: JSONObject): Page {
         val out = LinkedHashMap<String, Video>()
@@ -92,12 +146,13 @@ object InnerTube {
                         n.optJSONObject(key)?.let { fromRenderer(it) }?.let { out.putIfAbsent(it.id, it) }
                     }
                     n.optJSONObject("lockupViewModel")?.let { fromLockup(it) }?.let { out.putIfAbsent(it.id, it) }
-                    n.optJSONObject("continuationItemRenderer")
-                        ?.optJSONObject("continuationEndpoint")
-                        ?.optJSONObject("continuationCommand")
-                        ?.optString("token")
-                        ?.takeIf { it.isNotEmpty() }
-                        ?.let { cont = it }
+                    n.optJSONObject("continuationItemRenderer")?.let { c ->
+                        (c.optJSONObject("continuationEndpoint")?.optJSONObject("continuationCommand")
+                            ?: find(c, "continuationCommand"))
+                            ?.optString("token")
+                            ?.takeIf { it.isNotEmpty() }
+                            ?.let { cont = it }
+                    }
                     val keys = n.keys()
                     while (keys.hasNext()) {
                         val k = keys.next()
@@ -118,13 +173,21 @@ object InnerTube {
             ?: v.optJSONObject("shortBylineText")
             ?: v.optJSONObject("longBylineText")).text()
         val meta = listOf(
-            v.optJSONObject("lengthText").text(),
             (v.optJSONObject("shortViewCountText") ?: v.optJSONObject("viewCountText")).text(),
             v.optJSONObject("publishedTimeText").text(),
         ).filter { it.isNotBlank() }.joinToString(" · ")
+        val avatarArr = v.optJSONObject("channelThumbnailSupportedRenderers")
+            ?.optJSONObject("channelThumbnailWithLinkRenderer")
+            ?.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
+            ?: v.optJSONObject("channelThumbnail")?.optJSONArray("thumbnails")
         return Video(
-            id, v.optJSONObject("title").text(), channel, meta,
-            pickThumb(v.optJSONObject("thumbnail")?.optJSONArray("thumbnails"))
+            id = id,
+            title = v.optJSONObject("title").text(),
+            channel = channel,
+            meta = meta,
+            duration = v.optJSONObject("lengthText").text(),
+            thumb = pickThumb(v.optJSONObject("thumbnail")?.optJSONArray("thumbnails"), 640),
+            avatar = pickThumb(avatarArr, 68),
         )
     }
 
@@ -144,31 +207,37 @@ object InnerTube {
             }
         }
         val img = l.optJSONObject("contentImage")?.optJSONObject("thumbnailViewModel")
-        val meta = (listOfNotNull(img?.let { findBadge(it) }) + parts.drop(1)).joinToString(" · ")
+        val avatar = md?.optJSONObject("image")?.let { find(it, "avatarViewModel") }
+            ?.optJSONObject("image")?.optJSONArray("sources")
         return Video(
-            id,
-            md?.optJSONObject("title")?.optString("content").orEmpty(),
-            parts.firstOrNull().orEmpty(),
-            meta,
-            pickThumb(img?.optJSONObject("image")?.optJSONArray("sources"))
+            id = id,
+            title = md?.optJSONObject("title")?.optString("content").orEmpty(),
+            channel = parts.firstOrNull().orEmpty(),
+            meta = parts.drop(1).joinToString(" · "),
+            duration = img?.let { findBadge(it) }.orEmpty(),
+            thumb = pickThumb(img?.optJSONObject("image")?.optJSONArray("sources"), 640),
+            avatar = pickThumb(avatar, 68),
         )
     }
 
-    /** Длительность у новых карточек лежит в бейдже на превью. */
-    private fun findBadge(n: Any?): String? = when (n) {
-        is JSONObject -> n.optJSONObject("thumbnailBadgeViewModel")?.optString("text")?.takeIf { it.isNotEmpty() }
-            ?: n.keys().asSequence().firstNotNullOfOrNull { findBadge(n.opt(it)) }
-        is JSONArray -> (0 until n.length()).firstNotNullOfOrNull { findBadge(n.opt(it)) }
+    /** Первый объект с данным ключом где угодно в дереве. */
+    private fun find(n: Any?, key: String): JSONObject? = when (n) {
+        is JSONObject -> n.optJSONObject(key)
+            ?: n.keys().asSequence().firstNotNullOfOrNull { find(n.opt(it), key) }
+        is JSONArray -> (0 until n.length()).firstNotNullOfOrNull { find(n.opt(it), key) }
         else -> null
     }
 
-    /** Превью ~360px шириной: хватает для списка и не тянет лишний трафик. */
-    private fun pickThumb(a: JSONArray?): String? {
+    /** Длительность у новых карточек лежит в бейдже на превью. */
+    private fun findBadge(n: JSONObject): String? =
+        find(n, "thumbnailBadgeViewModel")?.optString("text")?.takeIf { it.isNotEmpty() }
+
+    private fun pickThumb(a: JSONArray?, target: Int): String? {
         if (a == null) return null
         var best: JSONObject? = null
         for (i in 0 until a.length()) {
             val t = a.optJSONObject(i) ?: continue
-            if (best == null || abs(t.optInt("width") - 360) < abs(best.optInt("width") - 360)) best = t
+            if (best == null || abs(t.optInt("width") - target) < abs(best.optInt("width") - target)) best = t
         }
         val u = best?.optString("url")?.takeIf { it.isNotEmpty() } ?: return null
         return if (u.startsWith("//")) "https:$u" else u

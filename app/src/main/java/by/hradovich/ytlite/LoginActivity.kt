@@ -13,6 +13,7 @@ import androidx.webkit.WebViewFeature
 class LoginActivity : Activity() {
 
     private lateinit var web: WebView
+    private var done = false
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -36,19 +37,23 @@ class LoginActivity : Activity() {
             override fun onPageFinished(view: WebView, url: String) {
                 if (!url.contains("youtube.com") || url.contains("accounts.google")) return
                 val c = cm.getCookie("https://www.youtube.com") ?: return
-                if (c.contains("SAPISID")) {
-                    Auth.cookies = c
+                if (c.contains("SAPISID") && !done) {
+                    done = true
+                    Auth.add(c)
                     cm.flush()
                     setResult(RESULT_OK)
                     finish()
                 }
             }
         }
-        web.loadUrl(
-            "https://accounts.google.com/ServiceLogin?service=youtube&passive=true" +
-                "&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Faction_handle_signin%3Dtrue" +
-                "%26next%3Dhttps%253A%252F%252Fwww.youtube.com%252F"
-        )
+        // Чистый вход: старые cookie WebView не должны подставить прошлый аккаунт
+        cm.removeAllCookies {
+            web.loadUrl(
+                "https://accounts.google.com/ServiceLogin?service=youtube&passive=true" +
+                    "&continue=https%3A%2F%2Fwww.youtube.com%2Fsignin%3Faction_handle_signin%3Dtrue" +
+                    "%26next%3Dhttps%253A%252F%252Fwww.youtube.com%252F"
+            )
+        }
     }
 
     @Deprecated("Deprecated in Java")

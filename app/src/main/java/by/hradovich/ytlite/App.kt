@@ -1,6 +1,8 @@
 package by.hradovich.ytlite
 
 import android.app.Application
+import android.content.Context
+import android.content.SharedPreferences
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.schabi.newpipe.extractor.NewPipe
@@ -15,9 +17,26 @@ import java.util.concurrent.TimeUnit
 class App : Application() {
     override fun onCreate() {
         super.onCreate()
+        Prefs.init(this)
         Auth.init(this)
         NewPipe.init(NpDownloader)
+        // Прогрев: версия клиента и JS-плеер YouTube скачиваются заранее,
+        // чтобы первое видео стартовало быстрее.
+        Net.io.execute { Streams.warmUp() }
     }
+}
+
+object Prefs {
+    private lateinit var p: SharedPreferences
+
+    fun init(ctx: Context) {
+        p = ctx.getSharedPreferences("prefs", Context.MODE_PRIVATE)
+    }
+
+    /** Качество по умолчанию (по меньшей стороне кадра), 0 = без ограничения. */
+    var quality: Int
+        get() = p.getInt("quality", 1080)
+        set(v) = p.edit().putInt("quality", v).apply()
 }
 
 object Net {
@@ -29,7 +48,7 @@ object Net {
         .build()
 
     /** Небольшой пул: всё сетевое идёт сюда, никаких постоянных фоновых задач. */
-    val io: ExecutorService = Executors.newFixedThreadPool(3)
+    val io: ExecutorService = Executors.newFixedThreadPool(4)
 }
 
 /** Сетевой слой для NewPipeExtractor поверх общего OkHttp. */

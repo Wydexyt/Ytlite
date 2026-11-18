@@ -61,7 +61,7 @@ class PlaybackService : MediaSessionService() {
         // вместо того чтобы постоянно понемногу докачивать. Лимит 40 МБ — чтобы
         // с видео не съесть память.
         val load = DefaultLoadControl.Builder()
-            .setBufferDurationsMs(60_000, 600_000, 2_500, 5_000)
+            .setBufferDurationsMs(60_000, 600_000, 1_000, 2_500)
             .setTargetBufferBytes(40 * 1024 * 1024)
             .setPrioritizeTimeOverSizeThresholds(false)
             .build()
@@ -88,6 +88,7 @@ class PlaybackService : MediaSessionService() {
                     .build()
             )
             .build()
+        setVideo(false) // видео включается, только когда открыт экран плеера
         player.addListener(watchTracker)
 
         val open = PendingIntent.getActivity(
@@ -121,6 +122,10 @@ class PlaybackService : MediaSessionService() {
 
     // ---------- получение потоков ----------
 
+    private var videoClients = 0
+
+    private fun isVideoClient(c: MediaSession.ControllerInfo) = c.connectionHints.getBoolean(HINT_VIDEO, false)
+
     private val callback = object : MediaSession.Callback {
         override fun onAddMediaItems(
             mediaSession: MediaSession,
@@ -130,7 +135,11 @@ class PlaybackService : MediaSessionService() {
             val f = SettableFuture.create<MutableList<MediaItem>>()
             Net.io.execute {
                 try {
-                    f.set(mediaItems.map { prepare(it) }.toMutableList())
+                    val items = mediaItems.map { prepare(it) }.toMutableList()
+                    main.post {
+                        items.firstOrNull()?.let { applyQuality(resolved[it.mediaId]) }
+                        f.set(items)
+                    }
                 } catch (e: Exception) {
                     main.post {
                         Toast.makeText(this@PlaybackService, "Не удалось открыть видео: ${e.message}", Toast.LENGTH_LONG).show()
@@ -141,15 +150,34 @@ class PlaybackService : MediaSessionService() {
             return f
         }
 
+        /** Открыт экран плеера — включаем видео. */
+        override fun onPostConnect(session: MediaSession, controller: MediaSession.ControllerInfo) {
+            if (isVideoClient(controller)) {
+                videoClients++
+                setVideo(true)
+            }
+        }
+
         /** Экран плеера закрыт — видео не нужно, остаётся только звук. */
         override fun onDisconnected(session: MediaSession, controller: MediaSession.ControllerInfo) {
-            setVideo(false)
+            if (isVideoClient(controller)) {
+                videoClients = maxOf(0, videoClients - 1)
+                if (videoClients == 0) setVideo(false)
+            }
         }
+    }
+
+    /** Ограничение качества по умолчанию (по меньшей стороне кадра) и сброс ручного выбора. */
+    private fun applyQuality(r: Resolved?) {
+        val q = Prefs.quality.takeIf { it > 0 } ?: Int.MAX_VALUE
+        val b = player.trackSelectionParameters.buildUpon().clearOverridesOfType(C.TRACK_TYPE_VIDEO)
+        if (r?.portrait == true) b.setMaxVideoSize(q, Int.MAX_VALUE) else b.setMaxVideoSize(Int.MAX_VALUE, q)
+        player.trackSelectionParameters = b.build()
     }
 
     private fun prepare(item: MediaItem): MediaItem {
         val id = item.mediaId
-        val r = Streams.resolve(id)
+        val r = Streams.get(id)
         resolved[id] = r
         return item.buildUpon()
             .setUri("https://www.youtube.com/watch?v=$id")
@@ -170,8 +198,8 @@ class PlaybackService : MediaSessionService() {
 
         override fun createMediaSource(mediaItem: MediaItem): MediaSource {
             val r = resolved[mediaItem.mediaId] ?: throw IllegalStateException("Видео не подготовлено")
-            val parts = listOfNotNull(r.video, r.audio).map { build(it, mediaItem) }
-            return if (parts.size == 1) parts[0] else MergingMediaSource(true, *parts.toTypedArray())
+            val parts = (r.videos + listOfNotNull(r.audio)).map { build(it, mediaItem) }
+            return if (parts.size == 1) parts[0] else MergingMediaSource(true, true, *parts.toTypedArray())
         }
     }
 
@@ -261,6 +289,7 @@ class PlaybackService : MediaSessionService() {
     private fun newCpn(): String = (1..16).map { CPN[Random.nextInt(CPN.length)] }.joinToString("")
 
     companion object {
+        const val HINT_VIDEO = "video"
         private val POST_BODY = byteArrayOf(0x78, 0)
         private const val CPN = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
     }
