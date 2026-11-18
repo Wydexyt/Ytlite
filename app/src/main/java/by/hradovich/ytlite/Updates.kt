@@ -13,9 +13,9 @@ object Updates {
     private const val API = "https://api.github.com/repos/Wydexyt/Ytlite/releases/latest"
     private const val PERIOD = 6L * 60 * 60 * 1000
 
-    /** "0.1.5" → [0,1,5]; старые теги вида "4" → [0,1,4]. */
+    /** "0.1.5" → [0,1,5]; "0.2.0.1" → [0,2,0,1]; "0.2.0-dev12" → [0,2,0]; старые теги "4" → [0,1,4]. */
     private fun parse(v: String): List<Int>? {
-        val parts = v.trim().split('.').map { it.toIntOrNull() ?: return null }
+        val parts = v.trim().substringBefore('-').split('.').map { it.toIntOrNull() ?: return null }
         return if (parts.size == 1) listOf(0, 1, parts[0]) else parts
     }
 

@@ -13,13 +13,13 @@ android {
         applicationId = "by.hradovich.ytlite"
         minSdk = 26
         targetSdk = 35
-        // versionCode — номер сборки GitHub Actions (для Android), versionName — 0.1.x из version.properties
+        // versionCode — номер сборки GitHub Actions (для Android),
+        // versionName — из CI (с номером хотфикса) или из version.properties
         val build = System.getenv("BUILD_NUMBER")?.toIntOrNull() ?: 1
-        val v = rootProject.file("version.properties").readLines()
-            .filter { '=' in it && !it.trimStart().startsWith("#") }
-            .associate { it.substringBefore('=').trim() to it.substringAfter('=').trim() }
+        val base = rootProject.file("version.properties").readLines()
+            .firstOrNull { it.startsWith("version=") }?.substringAfter('=')?.trim() ?: "0.0.0"
         versionCode = build
-        versionName = "${v["major"]}.${v["minor"]}.${build - (v["patchOffset"]?.toInt() ?: 0)}"
+        versionName = System.getenv("VERSION") ?: base
     }
 
     buildFeatures { buildConfig = true }

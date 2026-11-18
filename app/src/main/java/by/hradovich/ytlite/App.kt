@@ -35,6 +35,11 @@ class App : Application(), ImageLoaderFactory {
         super.onCreate()
         ErrorLog.init(this)
         Prefs.init(this)
+        // Новая версия — начинаем журнал ошибок с чистого листа
+        if (Prefs.lastVersion != BuildConfig.VERSION_NAME) {
+            ErrorLog.clear()
+            Prefs.lastVersion = BuildConfig.VERSION_NAME
+        }
         Auth.init(this)
         NewPipe.init(NpDownloader)
         // Прогрев: версия клиента и JS-плеер YouTube скачиваются заранее,
@@ -58,6 +63,10 @@ object Prefs {
     var qualityMobile: Int
         get() = p.getInt("qualityMobile", 480)
         set(v) = p.edit().putInt("qualityMobile", v).apply()
+
+    var lastVersion: String?
+        get() = p.getString("lastVersion", null)
+        set(v) = p.edit().putString("lastVersion", v).apply()
 
     var sponsorBlock: Boolean
         get() = p.getBoolean("sponsorBlock", true)
