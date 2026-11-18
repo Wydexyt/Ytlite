@@ -56,6 +56,8 @@ class Feed(
 
     fun scrollTop() = list.smoothScrollToPosition(0)
 
+    fun refreshProgress() = adapter.refreshProgress()
+
     fun reset() {
         generation++
         adapter.submit(emptyList())

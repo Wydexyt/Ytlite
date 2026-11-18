@@ -29,6 +29,17 @@
             android:textColor="#FFFFFFFF"
             android:textSize="12sp"
             android:textStyle="bold" />
+
+        <ProgressBar
+            android:id="@+id/watched"
+            style="@android:style/Widget.Material.ProgressBar.Horizontal"
+            android:layout_width="match_parent"
+            android:layout_height="4dp"
+            android:layout_gravity="bottom"
+            android:max="100"
+            android:progressBackgroundTint="#66FFFFFF"
+            android:progressTint="#FFFF0033"
+            android:visibility="gone" />
     </FrameLayout>
 
     <LinearLayout

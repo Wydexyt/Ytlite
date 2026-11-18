@@ -35,9 +35,11 @@
     </LinearLayout>
 
     <LinearLayout
+        android:id="@+id/detChannelRow"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="14dp"
+        android:background="?android:attr/selectableItemBackground"
         android:gravity="center_vertical"
         android:orientation="horizontal">
 
@@ -65,6 +67,72 @@
             android:maxLines="1"
             android:textColor="@color/sub"
             android:textSize="12sp" />
+
+        <TextView
+            android:id="@+id/detSubscribe"
+            style="@style/Chip"
+            android:layout_height="36dp"
+            android:layout_marginEnd="0dp"
+            android:textStyle="bold"
+            android:visibility="gone" />
+    </LinearLayout>
+
+    <!-- Лайк / дизлайк -->
+    <LinearLayout
+        android:id="@+id/rateBox"
+        android:layout_width="wrap_content"
+        android:layout_height="36dp"
+        android:layout_marginTop="12dp"
+        android:background="@drawable/chip"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:id="@+id/likeBtn"
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:background="?android:attr/selectableItemBackground"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:paddingStart="14dp"
+            android:paddingEnd="12dp">
+
+            <ImageView
+                android:id="@+id/likeIcon"
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:src="@drawable/ic_like" />
+
+            <TextView
+                android:id="@+id/likeCount"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:textColor="@color/text"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <View
+            android:layout_width="1dp"
+            android:layout_height="20dp"
+            android:background="#FF4A4A4A" />
+
+        <FrameLayout
+            android:id="@+id/dislikeBtn"
+            android:layout_width="48dp"
+            android:layout_height="match_parent"
+            android:background="?android:attr/selectableItemBackground">
+
+            <ImageView
+                android:id="@+id/dislikeIcon"
+                android:layout_width="20dp"
+                android:layout_height="20dp"
+                android:layout_gravity="center"
+                android:rotation="180"
+                android:src="@drawable/ic_like" />
+        </FrameLayout>
     </LinearLayout>
 
     <!-- Карточка комментариев -->

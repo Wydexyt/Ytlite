@@ -14,10 +14,24 @@ data class Video(
     val id: String,
     val title: String,
     val channel: String,
-    val meta: String,      // просмотры · дата
+    val meta: String,      // просмотры · дата (для канала — подписчики)
     val duration: String,
     val thumb: String?,
     val avatar: String?,
+    val channelId: String? = null,
+    val watched: Int = 0,          // % просмотрено (из аккаунта YouTube)
+    val isChannel: Boolean = false, // карточка канала в поиске (id = channelId)
+    val subscribed: Boolean = false,
+)
+
+class ChannelInfo(
+    val id: String,
+    val title: String,
+    val avatar: String?,
+    val banner: String?,
+    val meta: String, // @handle · подписчики · видео
+    val subscribed: Boolean,
+    val videos: Page,
 )
 
 class Page(val items: List<Video>, val continuation: String?)
@@ -35,11 +49,17 @@ class Details(
     val teaserAvatar: String?,
     val commentsToken: String?,
     val related: Page,
+    val channelId: String?,
+    val subscribed: Boolean,
+    val likes: String,
+    val likeStatus: String, // LIKE / DISLIKE / INDIFFERENT
+    val chapters: List<Pair<Long, String>>,
 )
 
 class Comment(
     val id: String,
     val author: String,
+    val authorId: String?,
     val avatar: String?,
     val text: String,
     val time: String,
@@ -96,9 +116,8 @@ object InnerTube {
 
     fun browse(browseId: String): Page = parse(post("browse", JSONObject().put("browseId", browseId)))
 
-    /** params = фильтр «только видео». */
-    fun search(query: String): Page =
-        parse(post("search", JSONObject().put("query", query).put("params", "EgIQAQ%3D%3D")))
+    /** Поиск: видео и каналы вперемешку, как в YouTube. */
+    fun search(query: String): Page = parse(post("search", JSONObject().put("query", query)))
 
     fun more(endpoint: String, token: String, exclude: String? = null): Page {
         val p = parse(post(endpoint, JSONObject().put("continuation", token)))
@@ -132,7 +151,24 @@ object InnerTube {
             ?.let { find(it, "continuationCommand") }?.optString("token")?.takeIf { it.isNotEmpty() }
 
         val related = parse(j)
+        val likeVm = find(j, "likeButtonViewModel")
+        val likes = likeVm?.let { find(it, "defaultButtonViewModel") }?.let { find(it, "buttonViewModel") }
+            ?.optString("title").orEmpty()
+        val chapters = ArrayList<Pair<Long, String>>()
+        find(j, "multiMarkersPlayerBarRenderer")?.let { findArray(it, "chapters") }?.let { a ->
+            for (i in 0 until a.length()) {
+                val c = a.optJSONObject(i)?.optJSONObject("chapterRenderer") ?: continue
+                chapters += c.optLong("timeRangeStartMillis") to c.optJSONObject("title").text()
+            }
+        }
         return Details(
+            channelId = owner?.optJSONObject("navigationEndpoint")?.optJSONObject("browseEndpoint")?.optString("browseId")
+                ?: owner?.let { find(it, "browseEndpoint") }?.optString("browseId"),
+            subscribed = isSubscribed(j),
+            likes = likes,
+            likeStatus = find(j, "likeStatusEntity")?.optString("likeStatus")
+                ?: likeVm?.optString("likeStatus")?.takeIf { it.isNotEmpty() } ?: "INDIFFERENT",
+            chapters = chapters,
             title = p?.optJSONObject("title").text(),
             meta = listOf(views, date).filter { it.isNotBlank() }.joinToString(" · "),
             channel = owner?.optJSONObject("title").text(),
@@ -230,6 +266,7 @@ object InnerTube {
         return Comment(
             id = props?.optString("commentId").orEmpty(),
             author = author?.optString("displayName").orEmpty(),
+            authorId = author?.optString("channelId")?.takeIf { it.isNotEmpty() },
             avatar = author?.optString("avatarThumbnailUrl")?.takeIf { it.isNotEmpty() }?.let { fixUrl(it) },
             text = props?.optJSONObject("content")?.optString("content").orEmpty(),
             time = props?.optString("publishedTime").orEmpty(),
@@ -246,6 +283,7 @@ object InnerTube {
         return Comment(
             id = id,
             author = r.optJSONObject("authorText").text(),
+            authorId = r.optJSONObject("authorEndpoint")?.optJSONObject("browseEndpoint")?.optString("browseId"),
             avatar = pickThumb(r.optJSONObject("authorThumbnail")?.optJSONArray("thumbnails"), 88),
             text = r.optJSONObject("contentText").text(),
             time = r.optJSONObject("publishedTimeText").text(),
@@ -263,6 +301,69 @@ object InnerTube {
         ok(post("comment/create_comment_reply", JSONObject().put("createReplyParams", params).put("commentText", text)))
 
     private fun ok(j: JSONObject) = j.optJSONArray("actions") != null || j.toString().contains("STATUS_SUCCEEDED")
+
+    // ---------- подписки, лайки, каналы ----------
+
+    /** Ошибка HTTP выбросит исключение — иначе считаем, что получилось. */
+    fun subscribe(channelId: String, on: Boolean) {
+        post(
+            if (on) "subscription/subscribe" else "subscription/unsubscribe",
+            JSONObject().put("channelIds", JSONArray().put(channelId))
+        )
+    }
+
+    /** status: LIKE, DISLIKE или INDIFFERENT (снять оценку). */
+    fun rate(videoId: String, status: String) {
+        val ep = when (status) {
+            "LIKE" -> "like/like"
+            "DISLIKE" -> "like/dislike"
+            else -> "like/removelike"
+        }
+        post(ep, JSONObject().put("target", JSONObject().put("videoId", videoId)))
+    }
+
+    private fun isSubscribed(j: JSONObject): Boolean =
+        find(j, "subscribeButtonRenderer")?.optBoolean("subscribed")
+            ?: find(j, "subscriptionStateEntity")?.optBoolean("subscribed")
+            ?: false
+
+    /** Страница канала: шапка + вкладка «Видео». */
+    fun channel(id: String): ChannelInfo {
+        val home = post("browse", JSONObject().put("browseId", id).put("params", "EgZ2aWRlb3PyBgQKAjoA"))
+        val ph = find(home, "pageHeaderViewModel")
+        val c4 = find(home, "c4TabbedHeaderRenderer")
+        val meta = find(home, "channelMetadataRenderer")
+        val title = ph?.optJSONObject("title")?.let { find(it, "text") }?.optString("content")?.takeIf { it.isNotEmpty() }
+            ?: c4?.optJSONObject("title").text().ifEmpty { meta?.optString("title").orEmpty() }
+        val avatar = ph?.optJSONObject("image")?.let { find(it, "avatarViewModel") }
+            ?.optJSONObject("image")?.optJSONArray("sources")?.let { pickThumb(it, 176) }
+            ?: pickThumb(c4?.optJSONObject("avatar")?.optJSONArray("thumbnails"), 176)
+            ?: pickThumb(meta?.optJSONObject("avatar")?.optJSONArray("thumbnails"), 176)
+        val banner = ph?.optJSONObject("banner")?.let { find(it, "image") }?.optJSONArray("sources")?.let { pickThumb(it, 1080) }
+            ?: pickThumb(c4?.optJSONObject("banner")?.optJSONArray("thumbnails"), 1080)
+        val parts = ArrayList<String>()
+        val rows = ph?.optJSONObject("metadata")?.let { findArray(it, "metadataRows") }
+        if (rows != null) for (i in 0 until rows.length()) {
+            val ps = rows.optJSONObject(i)?.optJSONArray("metadataParts") ?: continue
+            for (k in 0 until ps.length()) {
+                ps.optJSONObject(k)?.optJSONObject("text")?.optString("content")?.takeIf { it.isNotBlank() }?.let { parts += it }
+            }
+        }
+        if (parts.isEmpty() && c4 != null) {
+            parts += listOf(c4.optJSONObject("channelHandleText").text(), c4.optJSONObject("subscriberCountText").text())
+                .filter { it.isNotBlank() }
+        }
+        val videos = parse(home)
+        return ChannelInfo(
+            id = id,
+            title = title,
+            avatar = avatar,
+            banner = banner,
+            meta = parts.joinToString(" · "),
+            subscribed = isSubscribed(home),
+            videos = Page(videos.items.map { it.copy(channel = "", avatar = null) }, videos.continuation),
+        )
+    }
 
     // ---------- подсказки поиска ----------
 
@@ -335,6 +436,7 @@ object InnerTube {
                         n.optJSONObject(key)?.let { fromRenderer(it) }?.let { out.putIfAbsent(it.id, it) }
                     }
                     n.optJSONObject("lockupViewModel")?.let { fromLockup(it) }?.let { out.putIfAbsent(it.id, it) }
+                    n.optJSONObject("channelRenderer")?.let { fromChannel(it) }?.let { out.putIfAbsent(it.id, it) }
                     n.optJSONObject("continuationItemRenderer")?.let { c ->
                         (c.optJSONObject("continuationEndpoint")?.optJSONObject("continuationCommand")
                             ?: find(c, "continuationCommand"))
@@ -378,6 +480,21 @@ object InnerTube {
             duration = v.optJSONObject("lengthText").text(),
             thumb = pickThumb(v.optJSONObject("thumbnail")?.optJSONArray("thumbnails"), 640),
             avatar = pickThumb(avatarArr, 68),
+            channelId = (v.optJSONObject("ownerText") ?: v.optJSONObject("shortBylineText") ?: v.optJSONObject("longBylineText"))
+                ?.let { find(it, "browseEndpoint") }?.optString("browseId")?.takeIf { it.isNotEmpty() },
+            watched = find(v, "thumbnailOverlayResumePlaybackRenderer")?.optInt("percentDurationWatched") ?: 0,
+        )
+    }
+
+    private fun fromChannel(c: JSONObject): Video? {
+        val id = c.optString("channelId").ifEmpty { return null }
+        // В новом поиске в subscriberCountText лежит @handle, а подписчики — в videoCountText
+        val meta = listOf(c.optJSONObject("subscriberCountText").text(), c.optJSONObject("videoCountText").text())
+            .filter { it.isNotBlank() }.joinToString(" · ")
+        return Video(
+            id = id, title = c.optJSONObject("title").text(), channel = "", meta = meta, duration = "",
+            thumb = null, avatar = pickThumb(c.optJSONObject("thumbnail")?.optJSONArray("thumbnails"), 176),
+            channelId = id, isChannel = true, subscribed = isSubscribed(c),
         )
     }
 
@@ -408,6 +525,9 @@ object InnerTube {
             duration = img?.let { findBadge(it) }.orEmpty(),
             thumb = pickThumb(img?.optJSONObject("image")?.optJSONArray("sources"), 640),
             avatar = pickThumb(avatar, 68),
+            channelId = md?.optJSONObject("image")?.let { find(it, "browseEndpoint") }?.optString("browseId")
+                ?.takeIf { it.isNotEmpty() },
+            watched = img?.let { find(it, "thumbnailOverlayProgressBarViewModel") }?.optInt("startPercent") ?: 0,
         )
     }
 

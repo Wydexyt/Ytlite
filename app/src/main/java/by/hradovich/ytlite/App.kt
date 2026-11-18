@@ -3,6 +3,8 @@ package by.hradovich.ytlite
 import android.app.Application
 import android.content.Context
 import android.content.SharedPreferences
+import org.json.JSONArray
+import org.json.JSONObject
 import okhttp3.OkHttpClient
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.schabi.newpipe.extractor.NewPipe
@@ -33,10 +35,48 @@ object Prefs {
         p = ctx.getSharedPreferences("prefs", Context.MODE_PRIVATE)
     }
 
-    /** Качество по умолчанию (по меньшей стороне кадра), 0 = без ограничения. */
-    var quality: Int
+    /** Качество по умолчанию (по меньшей стороне кадра), 0 = без ограничения. Отдельно для Wi-Fi и мобильной сети. */
+    var qualityWifi: Int
         get() = p.getInt("quality", 1080)
         set(v) = p.edit().putInt("quality", v).apply()
+
+    var qualityMobile: Int
+        get() = p.getInt("qualityMobile", 480)
+        set(v) = p.edit().putInt("qualityMobile", v).apply()
+
+    var sponsorBlock: Boolean
+        get() = p.getBoolean("sponsorBlock", true)
+        set(v) = p.edit().putBoolean("sponsorBlock", v).apply()
+
+    // ---------- продолжение с места остановки ----------
+
+    private val resume: JSONObject by lazy { runCatching { JSONObject(p.getString("resume", "{}")!!) }.getOrDefault(JSONObject()) }
+
+    /** Позиция, с которой продолжить (0 — сначала). */
+    @Synchronized
+    fun resumePosition(id: String): Long = resume.optJSONArray(id)?.optLong(0) ?: 0
+
+    /** Доля просмотренного 0..100 (для полоски на превью). */
+    @Synchronized
+    fun watchedPercent(id: String): Int {
+        val a = resume.optJSONArray(id) ?: return 0
+        val d = a.optLong(1)
+        return if (d > 0) (a.optLong(0) * 100 / d).toInt() else 0
+    }
+
+    @Synchronized
+    fun saveResume(id: String, pos: Long, dur: Long) {
+        if (dur <= 0) return
+        if (pos < 10_000 || pos > dur - 15_000) resume.remove(id)
+        else resume.put(id, JSONArray().put(pos).put(dur).put(System.currentTimeMillis()))
+        // храним не больше 300 последних
+        if (resume.length() > 300) {
+            val keys = resume.keys().asSequence().toList()
+                .sortedBy { resume.optJSONArray(it)?.optLong(2) ?: 0 }
+            keys.take(resume.length() - 300).forEach { resume.remove(it) }
+        }
+        p.edit().putString("resume", resume.toString()).apply()
+    }
 
     /** История поисковых запросов, новые сверху. */
     val history: List<String>

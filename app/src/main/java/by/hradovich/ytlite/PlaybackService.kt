@@ -2,6 +2,8 @@ package by.hradovich.ytlite
 
 import android.app.PendingIntent
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.net.Uri
 import android.os.Handler
 import android.os.Looper
@@ -20,6 +22,7 @@ import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.datasource.ResolvingDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.PlayerMessage
 import androidx.media3.exoplayer.dash.DashMediaSource
 import androidx.media3.exoplayer.dash.manifest.DashManifestParser
 import androidx.media3.exoplayer.drm.DrmSessionManagerProvider
@@ -108,6 +111,7 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        saveResume()
         reportWatchTime()
         session.release()
         player.release()
@@ -154,7 +158,7 @@ class PlaybackService : MediaSessionService() {
         override fun onPostConnect(session: MediaSession, controller: MediaSession.ControllerInfo) {
             if (isVideoClient(controller)) {
                 videoClients++
-                setVideo(true)
+                setVideo(!audioOnly)
             }
         }
 
@@ -169,14 +173,23 @@ class PlaybackService : MediaSessionService() {
 
     /** Ограничение качества по умолчанию (по меньшей стороне кадра) и сброс ручного выбора. */
     private fun applyQuality(r: Resolved?) {
-        val q = Prefs.quality.takeIf { it > 0 } ?: Int.MAX_VALUE
+        val q = (if (onWifi()) Prefs.qualityWifi else Prefs.qualityMobile).takeIf { it > 0 } ?: Int.MAX_VALUE
         val b = player.trackSelectionParameters.buildUpon().clearOverridesOfType(C.TRACK_TYPE_VIDEO)
         if (r?.portrait == true) b.setMaxVideoSize(q, Int.MAX_VALUE) else b.setMaxVideoSize(Int.MAX_VALUE, q)
         player.trackSelectionParameters = b.build()
     }
 
+    private fun onWifi(): Boolean {
+        val cm = getSystemService(ConnectivityManager::class.java)
+        val caps = cm.getNetworkCapabilities(cm.activeNetwork) ?: return false
+        return caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+    }
+
     private fun prepare(item: MediaItem): MediaItem {
         val id = item.mediaId
+        if (Prefs.sponsorBlock && !segments.containsKey(id)) {
+            Net.io.execute { segments[id] = SponsorBlock.segments(id) }
+        }
         val r = Streams.get(id)
         resolved[id] = r
         return item.buildUpon()
@@ -251,8 +264,44 @@ class PlaybackService : MediaSessionService() {
     @Volatile private var watchUrl: String? = null
     private var cpn = ""
 
+    // ---------- SponsorBlock ----------
+
+    private val segments = ConcurrentHashMap<String, List<LongArray>>()
+    private val skipMessages = ArrayList<PlayerMessage>()
+
+    private fun scheduleSkips() {
+        skipMessages.forEach { it.cancel() }
+        skipMessages.clear()
+        if (!Prefs.sponsorBlock) return
+        val id = player.currentMediaItem?.mediaId ?: return
+        val segs = segments[id]
+        if (segs == null) {
+            // сегменты ещё грузятся — попробуем чуть позже
+            main.postDelayed({ if (player.currentMediaItem?.mediaId == id && segments.containsKey(id)) scheduleSkips() }, 1500)
+            return
+        }
+        for (seg in segs) {
+            skipMessages += player.createMessage { _, _ ->
+                if (player.currentMediaItem?.mediaId == id && player.currentPosition < seg[1] - 500) {
+                    player.seekTo(seg[1])
+                    Toast.makeText(this, "Пропущена реклама", Toast.LENGTH_SHORT).show()
+                }
+            }.setLooper(Looper.getMainLooper()).setPosition(seg[0]).setDeleteAfterDelivery(false).send()
+        }
+    }
+
+    // ---------- продолжение с места, история просмотров ----------
+
+    private fun saveResume() {
+        val id = player.currentMediaItem?.mediaId ?: return
+        Prefs.saveResume(id, player.currentPosition, player.duration)
+    }
+
     private val watchTracker = object : Player.Listener {
+        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) = scheduleSkips()
+
         override fun onIsPlayingChanged(isPlaying: Boolean) {
+            if (!isPlaying && player.playbackState != Player.STATE_BUFFERING) saveResume()
             if (!Auth.loggedIn) return
             val id = player.currentMediaItem?.mediaId ?: return
             if (isPlaying && id != trackedId) {
@@ -290,6 +339,10 @@ class PlaybackService : MediaSessionService() {
 
     companion object {
         const val HINT_VIDEO = "video"
+
+        /** Режим «только звук»: видео не грузится даже при открытом экране плеера. */
+        @Volatile
+        var audioOnly = false
         private val POST_BODY = byteArrayOf(0x78, 0)
         private const val CPN = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
     }

@@ -52,6 +52,17 @@ class PlayerActivity : Activity() {
     private lateinit var playerBox: FrameLayout
     private lateinit var view: PlayerView
     private lateinit var settings: ImageButton
+    private lateinit var audioBtn: ImageButton
+    private lateinit var chapterView: TextView
+    private var chapters: List<Pair<Long, String>> = emptyList()
+    private var likeStatus = "INDIFFERENT"
+    private val ticker = android.os.Handler(android.os.Looper.getMainLooper())
+    private val chapterTick = object : Runnable {
+        override fun run() {
+            updateChapter()
+            if (chapterView.visibility == View.VISIBLE) ticker.postDelayed(this, 1000)
+        }
+    }
     private lateinit var details: RecyclerView
     private lateinit var overlay: TapOverlay
 
@@ -88,6 +99,8 @@ class PlayerActivity : Activity() {
         playerBox = findViewById(R.id.playerBox)
         view = findViewById(R.id.playerView)
         settings = findViewById(R.id.settings)
+        audioBtn = findViewById(R.id.audioOnly)
+        chapterView = findViewById(R.id.chapter)
         details = findViewById(R.id.details)
 
         view.setShowNextButton(false)
@@ -97,8 +110,20 @@ class PlayerActivity : Activity() {
         view.setFullscreenButtonClickListener { full -> setLandscape(full) }
         view.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { v ->
             settings.visibility = v
+            audioBtn.visibility = v
             hideBuiltInSettings()
+            ticker.removeCallbacks(chapterTick)
+            if (v == View.VISIBLE && chapters.isNotEmpty()) {
+                chapterView.visibility = View.VISIBLE
+                chapterTick.run()
+            } else chapterView.visibility = View.GONE
         })
+        view.findViewById<androidx.media3.ui.DefaultTimeBar>(androidx.media3.ui.R.id.exo_progress)?.apply {
+            setAdMarkerColor(0xFFFFFFFF.toInt())
+            setPlayedAdMarkerColor(0xB3FFFFFF.toInt())
+        }
+        audioBtn.setOnClickListener { toggleAudioOnly() }
+        updateAudioBtn()
         hideBuiltInSettings()
 
         overlay = TapOverlay(this) {
@@ -107,6 +132,7 @@ class PlayerActivity : Activity() {
         view.overlayFrameLayout?.addView(
             overlay, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         )
+        overlay.drag = dragHandler
         settings.setOnClickListener { showSettings() }
 
         val lm = LinearLayoutManager(this)
@@ -177,6 +203,7 @@ class PlayerActivity : Activity() {
     }
 
     override fun onDestroy() {
+        ticker.removeCallbacks(chapterTick)
         orientationListener.disable()
         super.onDestroy()
     }
@@ -192,12 +219,15 @@ class PlayerActivity : Activity() {
             c.play()
             return true
         }
+        // запомнить, где остановились в предыдущем видео
+        c.currentMediaItem?.mediaId?.let { Prefs.saveResume(it, c.currentPosition, c.duration) }
+        val from = if (start > 0) start else Prefs.resumePosition(id)
         c.setMediaItem(
             MediaItem.Builder()
                 .setMediaId(id)
                 .setMediaMetadata(MediaMetadata.Builder().setTitle(title).build())
                 .build(),
-            start
+            from
         )
         c.prepare()
         c.play()
@@ -218,6 +248,122 @@ class PlayerActivity : Activity() {
             it.play()
         }
     }
+
+    // ---------- лайки ----------
+
+    private fun rate(status: String) {
+        val id = detailsFor ?: return
+        if (!Auth.loggedIn) {
+            Toast.makeText(this, "Войдите в аккаунт", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val old = likeStatus
+        likeStatus = status
+        header.notifyItemChanged(0)
+        Net.io.execute {
+            val ok = runCatching { InnerTube.rate(id, status) }.isSuccess
+            if (!ok) runOnUiThread {
+                if (detailsFor == id) {
+                    likeStatus = old
+                    header.notifyItemChanged(0)
+                }
+                Toast.makeText(this, "Не получилось, попробуйте ещё раз", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    // ---------- главы ----------
+
+    private fun setChapters(list: List<Pair<Long, String>>) {
+        chapters = list
+        val times = list.drop(1).map { it.first }.toLongArray() // начало первой главы — 0, метка не нужна
+        view.setExtraAdGroupMarkers(times, BooleanArray(times.size))
+        if (list.isEmpty()) chapterView.visibility = View.GONE
+    }
+
+    private fun updateChapter() {
+        val c = controller ?: return
+        val pos = c.currentPosition
+        val ch = chapters.lastOrNull { it.first <= pos }
+        chapterView.text = ch?.second?.let { "•  $it" }.orEmpty()
+    }
+
+    // ---------- только звук ----------
+
+    private fun toggleAudioOnly() {
+        PlaybackService.audioOnly = !PlaybackService.audioOnly
+        controller?.let {
+            it.trackSelectionParameters = it.trackSelectionParameters.buildUpon()
+                .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, PlaybackService.audioOnly)
+                .build()
+        }
+        updateAudioBtn()
+        Toast.makeText(
+            this, if (PlaybackService.audioOnly) "Только звук: видео не загружается" else "Видео включено",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    private fun updateAudioBtn() {
+        audioBtn.setColorFilter(if (PlaybackService.audioOnly) getColor(R.color.link) else 0xFFFFFFFF.toInt())
+    }
+
+    // ---------- вертикальные жесты ----------
+
+    private var dragStartX = 0f
+    private var startBrightness = 0f
+    private var startVolume = 0
+
+    private val dragHandler = object : DragListener {
+        override fun onDragStart(startXFraction: Float) {
+            dragStartX = startXFraction
+            if (isLandscape) {
+                val b = window.attributes.screenBrightness
+                startBrightness = if (b >= 0) b else
+                    Settings.System.getInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS, 128) / 255f
+                startVolume = audio.getStreamVolume(android.media.AudioManager.STREAM_MUSIC)
+            }
+        }
+
+        override fun onDrag(dy: Float) {
+            val root = findViewById<View>(R.id.playerRoot)
+            if (!isLandscape) {
+                // свайп вниз — свернуть в мини-плеер
+                val d = dy.coerceAtLeast(0f)
+                root.translationY = d
+                root.alpha = 1f - (d / root.height).coerceIn(0f, 0.6f)
+                return
+            }
+            val h = playerBox.height.toFloat().coerceAtLeast(1f)
+            val delta = -dy / h * 1.2f
+            if (dragStartX < 0.5f) {
+                val b = (startBrightness + delta).coerceIn(0.01f, 1f)
+                window.attributes = window.attributes.apply { screenBrightness = b }
+                overlay.showInfo("☀  ${(b * 100).toInt()}%")
+            } else {
+                val max = audio.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
+                val v = (startVolume + delta * max).toInt().coerceIn(0, max)
+                audio.setStreamVolume(android.media.AudioManager.STREAM_MUSIC, v, 0)
+                overlay.showInfo("🔊  $v / $max")
+            }
+        }
+
+        override fun onDragEnd(dy: Float) {
+            if (isLandscape) return
+            val root = findViewById<View>(R.id.playerRoot)
+            if (dy > root.height * 0.2f) {
+                root.animate().translationY(root.height.toFloat()).alpha(0f).setDuration(150).withEndAction {
+                    finish()
+                    @Suppress("DEPRECATION")
+                    overridePendingTransition(0, 0)
+                }
+            } else {
+                root.animate().translationY(0f).alpha(1f).setDuration(150)
+            }
+        }
+    }
+
+    private val audio by lazy { getSystemService(android.media.AudioManager::class.java) }
 
     // ---------- настройки плеера ----------
 
@@ -269,6 +415,7 @@ class PlayerActivity : Activity() {
         if (detailsFor == id) return
         detailsFor = id
         current = null
+        setChapters(emptyList())
         closePanel(animate = false)
         resetComments()
         header.set(null, title)
@@ -279,6 +426,8 @@ class PlayerActivity : Activity() {
             runOnUiThread {
                 if (detailsFor != id || r == null) return@runOnUiThread
                 current = r
+                likeStatus = r.likeStatus
+                setChapters(r.chapters)
                 header.set(r, null)
                 related.submit(r.related.items)
                 relatedContinuation = r.related.continuation
@@ -316,6 +465,14 @@ class PlayerActivity : Activity() {
             val avatar: ImageView = v.findViewById(R.id.detAvatar)
             val channel: TextView = v.findViewById(R.id.detChannel)
             val subs: TextView = v.findViewById(R.id.detSubs)
+            val channelRow: View = v.findViewById(R.id.detChannelRow)
+            val subscribe: TextView = v.findViewById(R.id.detSubscribe)
+            val rateBox: View = v.findViewById(R.id.rateBox)
+            val likeBtn: View = v.findViewById(R.id.likeBtn)
+            val likeIcon: ImageView = v.findViewById(R.id.likeIcon)
+            val likeCount: TextView = v.findViewById(R.id.likeCount)
+            val dislikeBtn: View = v.findViewById(R.id.dislikeBtn)
+            val dislikeIcon: ImageView = v.findViewById(R.id.dislikeIcon)
             val commentsCard: View = v.findViewById(R.id.commentsCard)
             val commentsHeader: TextView = v.findViewById(R.id.commentsHeader)
             val teaserRow: View = v.findViewById(R.id.teaserRow)
@@ -343,6 +500,18 @@ class PlayerActivity : Activity() {
             h.subs.text = d?.subs.orEmpty()
             h.avatar.loadAvatar(d?.avatar)
             h.info.setOnClickListener { if (d != null) openDescription() }
+            val ch = d?.channelId
+            h.channelRow.setOnClickListener { ch?.let { ChannelActivity.open(this@PlayerActivity, it) } }
+            h.subscribe.bindSubscribe(ch, d?.subscribed ?: false)
+
+            h.rateBox.visibility = if (d != null && (d.likes.isNotEmpty() || Auth.loggedIn)) View.VISIBLE else View.GONE
+            h.likeCount.text = d?.likes.orEmpty().ifEmpty { "Нравится" }
+            val on = getColor(R.color.link)
+            val off = getColor(R.color.text)
+            h.likeIcon.setColorFilter(if (likeStatus == "LIKE") on else off)
+            h.dislikeIcon.setColorFilter(if (likeStatus == "DISLIKE") on else off)
+            h.likeBtn.setOnClickListener { rate(if (likeStatus == "LIKE") "INDIFFERENT" else "LIKE") }
+            h.dislikeBtn.setOnClickListener { rate(if (likeStatus == "DISLIKE") "INDIFFERENT" else "DISLIKE") }
 
             val hasComments = d != null && d.commentsToken != null
             h.commentsCard.visibility = if (hasComments) View.VISIBLE else View.GONE
@@ -646,7 +815,7 @@ class PlayerActivity : Activity() {
                 hideKeyboard()
                 val acc = Auth.active
                 val mine = Comment(
-                    id = "local-${System.currentTimeMillis()}", author = acc?.name.orEmpty(), avatar = acc?.avatar,
+                    id = "local-${System.currentTimeMillis()}", author = acc?.name.orEmpty(), authorId = null, avatar = acc?.avatar,
                     text = text, time = "только что", likes = "", replies = "", repliesToken = null, replyParams = null,
                 )
                 if (replyTo != null) repliesAdapter.insert(1, mine) else {
@@ -708,6 +877,8 @@ class PlayerActivity : Activity() {
                 h.itemView.paddingTop, h.itemView.paddingRight, h.itemView.paddingBottom
             )
             h.avatar.loadAvatar(c.avatar)
+            val aid = c.authorId
+            h.avatar.setOnClickListener(if (aid != null) View.OnClickListener { ChannelActivity.open(this@PlayerActivity, aid) } else null)
             h.author.text = listOf(c.author, c.time).filter { it.isNotBlank() }.joinToString(" · ")
             h.text.text = TextUtil.linkify(c.text) { seekTo(it) }
             h.text.movementMethod = LinkMovementMethod.getInstance()

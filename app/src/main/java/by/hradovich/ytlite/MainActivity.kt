@@ -179,6 +179,7 @@ class MainActivity : Activity() {
         shownAccount = Auth.active?.id
         navItems.forEachIndexed { i, v -> v.alpha = if (i == 0) 1f else 0.55f }
         feeds[0].load()
+        Updates.check(this)
     }
 
     override fun onStart() {
@@ -204,6 +205,8 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        feeds.forEach { it.refreshProgress() } // полоски «просмотрено»
+        searchFeed.refreshProgress()
         updateAccountIcon()
         if (Auth.active?.id != shownAccount) accountChanged()
         val acc = Auth.active
@@ -324,7 +327,10 @@ class MainActivity : Activity() {
         }
         menu.menu.add(1, ADD, 100, "Добавить аккаунт")
         if (active != null) menu.menu.add(1, LOGOUT, 101, "Выйти")
-        menu.menu.add(2, QUALITY, 102, "Качество по умолчанию: ${qualityName(Prefs.quality)}")
+        menu.menu.add(2, QUALITY_WIFI, 102, "Качество (Wi-Fi): ${qualityName(Prefs.qualityWifi)}")
+        menu.menu.add(2, QUALITY_MOBILE, 103, "Качество (моб. сеть): ${qualityName(Prefs.qualityMobile)}")
+        menu.menu.add(2, SPONSOR, 104, "SponsorBlock: ${if (Prefs.sponsorBlock) "вкл" else "выкл"}")
+        menu.menu.add(3, UPDATE, 105, "Проверить обновления (v${BuildConfig.VERSION_CODE})")
         menu.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 ADD -> startActivity(Intent(this, LoginActivity::class.java))
@@ -337,7 +343,16 @@ class MainActivity : Activity() {
                     }
                     .setNegativeButton("Отмена", null)
                     .show()
-                QUALITY -> chooseQuality()
+                QUALITY_WIFI -> chooseQuality(true)
+                QUALITY_MOBILE -> chooseQuality(false)
+                SPONSOR -> {
+                    Prefs.sponsorBlock = !Prefs.sponsorBlock
+                    android.widget.Toast.makeText(
+                        this, "Пропуск рекламных вставок ${if (Prefs.sponsorBlock) "включён" else "выключен"}",
+                        android.widget.Toast.LENGTH_SHORT
+                    ).show()
+                }
+                UPDATE -> Updates.check(this, force = true)
                 else -> accounts.getOrNull(item.itemId)?.let {
                     if (it.id != active) {
                         Auth.switchTo(it.id)
@@ -351,13 +366,14 @@ class MainActivity : Activity() {
         menu.show()
     }
 
-    private fun chooseQuality() {
-        val values = intArrayOf(2160, 1440, 1080, 720, 480, 360, 0)
+    private fun chooseQuality(wifi: Boolean) {
+        val values = intArrayOf(2160, 1440, 1080, 720, 480, 360, 240, 144, 0)
         val names = values.map { qualityName(it) }.toTypedArray()
+        val cur = if (wifi) Prefs.qualityWifi else Prefs.qualityMobile
         AlertDialog.Builder(this)
-            .setTitle("Качество по умолчанию")
-            .setSingleChoiceItems(names, values.indexOf(Prefs.quality)) { d, i ->
-                Prefs.quality = values[i]
+            .setTitle(if (wifi) "Качество по Wi-Fi" else "Качество в мобильной сети")
+            .setSingleChoiceItems(names, values.indexOf(cur)) { d, i ->
+                if (wifi) Prefs.qualityWifi = values[i] else Prefs.qualityMobile = values[i]
                 d.dismiss()
             }
             .show()
@@ -398,6 +414,9 @@ class MainActivity : Activity() {
     companion object {
         private const val ADD = Menu.FIRST + 1000
         private const val LOGOUT = Menu.FIRST + 1001
-        private const val QUALITY = Menu.FIRST + 1002
+        private const val QUALITY_WIFI = Menu.FIRST + 1002
+        private const val QUALITY_MOBILE = Menu.FIRST + 1003
+        private const val SPONSOR = Menu.FIRST + 1004
+        private const val UPDATE = Menu.FIRST + 1005
     }
 }

@@ -13,8 +13,24 @@ android {
         applicationId = "by.hradovich.ytlite"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1"
+        // Номер сборки GitHub Actions = номер версии (по нему приложение ищет обновления)
+        val build = System.getenv("BUILD_NUMBER")?.toIntOrNull() ?: 1
+        versionCode = build
+        versionName = "v$build"
+    }
+
+    buildFeatures { buildConfig = true }
+
+    signingConfigs {
+        create("release") {
+            val ks = file("release.jks")
+            if (ks.exists()) {
+                storeFile = ks
+                storePassword = System.getenv("KEYSTORE_PASSWORD")
+                keyAlias = "ytlite"
+                keyPassword = System.getenv("KEYSTORE_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
@@ -22,8 +38,9 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Подпись debug-ключом, чтобы release-APK сразу ставился на телефон
-            signingConfig = signingConfigs.getByName("debug")
+            // Постоянный ключ из секретов GitHub; локально без ключа — debug
+            signingConfig = if (file("release.jks").exists()) signingConfigs.getByName("release")
+            else signingConfigs.getByName("debug")
         }
     }
 
