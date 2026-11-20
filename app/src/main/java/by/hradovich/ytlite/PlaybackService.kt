@@ -644,18 +644,39 @@ class PlaybackService : MediaSessionService() {
         /**
          * ExoPlayer сообщает подписчикам свои команды — без «следующего» (в плеере один ролик).
          * Без подмены сессия передаёт это экранам, и кнопка «Следующий» в приложении перестаёт работать.
+         * Подмена — через прокси: все остальные события (в том числе методы по умолчанию) уходят как есть.
          */
         override fun addListener(listener: Player.Listener) {
-            val w = object : Player.Listener by listener {
-                override fun onAvailableCommandsChanged(availableCommands: Player.Commands) =
-                    listener.onAvailableCommandsChanged(withNav(availableCommands))
-            }
-            wrapped[listener] = w
+            val w = wrapped.getOrPut(listener) { navListener(listener) }
             super.addListener(w)
         }
 
         override fun removeListener(listener: Player.Listener) {
             super.removeListener(wrapped.remove(listener) ?: listener)
+        }
+
+        private fun navListener(listener: Player.Listener): Player.Listener {
+            lateinit var proxy: Player.Listener
+            proxy = java.lang.reflect.Proxy.newProxyInstance(
+                Player.Listener::class.java.classLoader, arrayOf(Player.Listener::class.java)
+            ) { _, m, args ->
+                when {
+                    m.declaringClass == Any::class.java -> when (m.name) {
+                        "equals" -> args?.getOrNull(0) === proxy
+                        "hashCode" -> System.identityHashCode(proxy)
+                        else -> "QueueListener($listener)"
+                    }
+                    // единственный метод с одним параметром Player.Commands — onAvailableCommandsChanged
+                    args?.size == 1 && args[0] is Player.Commands ->
+                        m.invoke(listener, withNav(args[0] as Player.Commands))
+                    else -> try {
+                        m.invoke(listener, *(args ?: emptyArray()))
+                    } catch (e: java.lang.reflect.InvocationTargetException) {
+                        throw e.cause ?: e
+                    }
+                }
+            } as Player.Listener
+            return proxy
         }
 
         override fun getAvailableCommands(): Player.Commands = withNav(super.getAvailableCommands())

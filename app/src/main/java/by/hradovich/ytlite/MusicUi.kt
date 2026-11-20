@@ -431,8 +431,13 @@ class MusicScreen(private val act: MainActivity, val root: View) {
 
     init {
         root.findViewById<View>(R.id.muClose).setOnClickListener { hide() }
-        root.findViewById<View>(R.id.muPrev).setOnClickListener { controller?.seekToPrevious() }
-        root.findViewById<View>(R.id.muNext).setOnClickListener { controller?.seekToNext() }
+        // сервис в том же процессе — очередь листаем напрямую
+        root.findViewById<View>(R.id.muPrev).setOnClickListener {
+            PlaybackService.instance?.playPrevious() ?: controller?.seekToPrevious()
+        }
+        root.findViewById<View>(R.id.muNext).setOnClickListener {
+            PlaybackService.instance?.playNext(fromUser = true) ?: controller?.seekToNext()
+        }
         root.findViewById<View>(R.id.muTimer).setOnClickListener { chooseSleep() }
         root.findViewById<View>(R.id.muLyrics).setOnClickListener { showLyrics() }
         likeBtn.setOnClickListener { rate(if (likeStatus == "LIKE") "INDIFFERENT" else "LIKE") }
