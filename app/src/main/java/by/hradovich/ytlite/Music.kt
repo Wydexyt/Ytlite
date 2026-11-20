@@ -24,7 +24,15 @@ class MusicItem(
 
 class MusicSection(val title: String, val items: List<MusicItem>, val list: Boolean)
 
-class MusicPage(val title: String, val subtitle: String, val cover: String?, val sections: List<MusicSection>, val tracks: List<QItem>)
+class MusicPage(
+    val title: String,
+    val subtitle: String,
+    val cover: String?,
+    val sections: List<MusicSection>,
+    val tracks: List<QItem>,
+    val channelId: String? = null, // исполнитель: на кого подписываться
+    val subscribed: Boolean = false,
+)
 
 /** Запросы к YouTube Music (клиент WEB_REMIX) от имени активного аккаунта. */
 object Music {
@@ -34,6 +42,11 @@ object Music {
 
     @Volatile
     private var version: String? = null
+
+    /** Заранее, при запуске: версия клиента (скачивается страница music.youtube.com). */
+    fun warmUp() {
+        runCatching { clientVersion() }
+    }
 
     private fun clientVersion(): String = version
         ?: (runCatching { YoutubeParsingHelper.getYoutubeMusicClientVersion() }.getOrNull() ?: FALLBACK_VERSION)
@@ -115,21 +128,34 @@ object Music {
         val strap = h?.optJSONObject("straplineTextOne").text()
         val sub = listOf(strap, h?.optJSONObject("subtitle").text(), h?.optJSONObject("secondSubtitle").text())
             .filter { !it.isNullOrBlank() }.joinToString(" · ")
-        val cover = thumb(h?.optJSONObject("thumbnail") ?: h?.optJSONObject("foregroundThumbnail"))
+        val cover = thumb(h?.optJSONObject("thumbnail") ?: h?.optJSONObject("foregroundThumbnail"), 544)
+        val sub0 = find(j, "subscribeButtonRenderer")
         val secs = sections(j)
         // у треков альбома нет своих обложек и исполнителя — берём из шапки
         val tracks = secs.filter { it.list }.flatMap { it.items }.filter { it.type == MusicItem.Type.SONG }
             .map { QItem(it.id, it.title, it.subtitle.substringBefore(" • ").ifEmpty { strap.orEmpty() }, it.thumb ?: cover, music = true) }
-        return MusicPage(title, sub, cover, secs, tracks)
+        return MusicPage(
+            title, sub, cover, secs, tracks,
+            channelId = sub0?.optString("channelId")?.ifEmpty { null }, subscribed = sub0?.optBoolean("subscribed") == true,
+        )
     }
 
-    /** Текст песни, если YouTube Music его отдаёт. */
-    fun lyrics(videoId: String): String? {
+    /** Оценка трека (LIKE / DISLIKE / INDIFFERENT) и ссылка на текст песни. */
+    class TrackInfo(val likeStatus: String, val lyricsId: String?)
+
+    fun trackInfo(videoId: String): TrackInfo {
         val next = post("next", JSONObject().put("videoId", videoId).put("isAudioOnly", true))
         var id: String? = null
         walk(next) { o ->
             o.optJSONObject("browseEndpoint")?.optString("browseId")?.takeIf { it.startsWith("MPLYt") }?.let { if (id == null) id = it }
         }
+        val like = find(next, "likeButtonRenderer")?.optString("likeStatus")?.ifEmpty { null } ?: "INDIFFERENT"
+        return TrackInfo(like, id)
+    }
+
+    /** Текст песни, если YouTube Music его отдаёт. */
+    fun lyrics(videoId: String, lyricsId: String? = null): String? {
+        val id = lyricsId ?: trackInfo(videoId).lyricsId
         val b = post("browse", JSONObject().put("browseId", id ?: return null))
         return find(b, "musicDescriptionShelfRenderer")?.let {
             val text = it.optJSONObject("description").text()
@@ -258,8 +284,14 @@ object Music {
         else -> null
     }
 
-    /** Самая крупная обложка (у YouTube Music — квадратные, до 544 px). */
-    fun thumb(n: JSONObject?, target: Int = 544): String? {
+    /** Обложка нужного размера: у YouTube Music размер задаётся в ссылке (=wN-hN), лишнего не качаем. */
+    fun thumb(n: JSONObject?, target: Int = 226): String? = pick(n, target)?.let { sized(it, target) }
+
+    fun sized(url: String, px: Int): String =
+        if (url.contains("googleusercontent.com") || url.contains("ggpht.com")) url.replace(Regex("=w\\d+-h\\d+[^/]*$"), "=w$px-h$px-l90-rj")
+        else url
+
+    private fun pick(n: JSONObject?, target: Int): String? {
         val a = n?.let { findArray(it, "thumbnails") } ?: return null
         var best: JSONObject? = null
         for (i in 0 until a.length()) {

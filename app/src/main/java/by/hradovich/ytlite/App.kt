@@ -52,6 +52,7 @@ class App : Application(), ImageLoaderFactory {
         // Прогрев: версия клиента и JS-плеер YouTube скачиваются заранее,
         // чтобы первое видео стартовало быстрее.
         Net.io.execute { Streams.warmUp() }
+        Net.io.execute { Music.warmUp() }
     }
 }
 

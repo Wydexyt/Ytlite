@@ -96,13 +96,17 @@ object Library {
     }
 }
 
-/** Библиотека: «Смотреть позже», «Понравившиеся» и плейлисты аккаунта — компактным списком. */
-class LibraryPage(private val act: MainActivity, parent: ViewGroup) : AppPage {
-    override val view: View = LayoutInflater.from(act).inflate(R.layout.page_channel, parent, false)
-    private val list: RecyclerView = view.findViewById(R.id.list)
-    private val progress: ProgressBar = view.findViewById(R.id.progress)
+/** Вкладка «Библиотека»: История, «Смотреть позже», «Понравившиеся» и плейлисты аккаунта — компактным списком. */
+class LibraryTab(private val act: MainActivity, parent: ViewGroup) {
+    val root: View = LayoutInflater.from(act).inflate(R.layout.page_music, parent, false)
+    private val list: RecyclerView = root.findViewById(R.id.mList)
+    private val progress: ProgressBar = root.findViewById(R.id.mProgress)
+    private val message: TextView = root.findViewById(R.id.mMessage)
+    private var gen = 0
+    var loaded = false
+        private set
 
-    /** Строка списка: иконка (для встроенных) или превью плейлиста. */
+    /** Строка: иконка (для встроенных разделов) или превью плейлиста. */
     private class Entry(val id: String, val title: String, val sub: String, val thumb: String?, val icon: Int = 0)
 
     private val items = ArrayList<Entry>()
@@ -128,21 +132,46 @@ class LibraryPage(private val act: MainActivity, parent: ViewGroup) : AppPage {
                 img.scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
                 img.load(e.thumb) { crossfade(false) }
             }
-            v.setOnClickListener { act.openPlaylist(e.id) }
+            v.setOnClickListener { if (e.id == HISTORY) act.openHistory() else act.openPlaylist(e.id) }
         }
     }
 
     init {
-        view.findViewById<View>(R.id.back).setOnClickListener { act.closePage(this) }
-        view.findViewById<TextView>(R.id.topTitle).setText(R.string.library)
+        // чипы «Главная/Библиотека» из макета музыки здесь не нужны
+        (root.findViewById<View>(R.id.mHome).parent as View).visibility = View.GONE
         list.layoutManager = LinearLayoutManager(act)
         list.adapter = adapter
+    }
+
+    fun scrollTop() = list.smoothScrollToPosition(0)
+
+    fun reset() {
+        loaded = false
+        load()
+    }
+
+    @android.annotation.SuppressLint("NotifyDataSetChanged")
+    fun load() {
+        loaded = true
+        val g = ++gen
+        items.clear()
+        message.visibility = View.GONE
+        if (!Auth.loggedIn) {
+            adapter.notifyDataSetChanged()
+            progress.visibility = View.GONE
+            message.setText(R.string.sign_in_needed)
+            message.visibility = View.VISIBLE
+            return
+        }
+        items += Entry(HISTORY, act.getString(R.string.tab_history), "", null, R.drawable.ic_history)
         items += Entry(Library.WATCH_LATER, act.getString(R.string.watch_later), "", null, R.drawable.ic_timer)
         items += Entry(Library.LIKED, act.getString(R.string.liked_videos), "", null, R.drawable.ic_like)
-        adapter.notifyItemRangeInserted(0, items.size)
+        adapter.notifyDataSetChanged()
+        progress.visibility = View.VISIBLE
         Net.io.execute {
             val r = runCatching { InnerTube.playlists() }.onFailure { ErrorLog.log("Плейлисты", it) }
             act.runOnUiThread {
+                if (g != gen) return@runOnUiThread
                 progress.visibility = View.GONE
                 r.onSuccess { pls ->
                     val start = items.size
@@ -154,6 +183,29 @@ class LibraryPage(private val act: MainActivity, parent: ViewGroup) : AppPage {
             }
         }
     }
+
+    companion object {
+        private const val HISTORY = "history"
+    }
+}
+
+/** История просмотров — лента внутри страницы. */
+class HistoryPage(private val act: MainActivity, parent: ViewGroup) : AppPage {
+    override val view: View = LayoutInflater.from(act).inflate(R.layout.page_host, parent, false)
+    private val feed: Feed
+
+    init {
+        view.findViewById<View>(R.id.back).setOnClickListener { act.closePage(this) }
+        view.findViewById<TextView>(R.id.topTitle).setText(R.string.tab_history)
+        val box = view.findViewById<ViewGroup>(R.id.content)
+        feed = Feed(act, act.getString(R.string.tab_history), box, { act.openVideo(it.id, it.title) }, true, "browse") {
+            InnerTube.browse("FEhistory")
+        }
+        box.addView(feed.root)
+        feed.load()
+    }
+
+    override fun onResume() = feed.refreshProgress()
 }
 
 /** Плейлист: «Воспроизвести всё», «Перемешать», видео с догрузкой; в своих — «Убрать из плейлиста». */

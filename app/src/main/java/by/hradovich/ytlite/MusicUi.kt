@@ -140,6 +140,7 @@ class MusicSectionsAdapter(private val act: MainActivity) : RecyclerView.Adapter
             1 -> (inf.inflate(R.layout.item_music_carousel, parent, false) as RecyclerView).apply {
                 layoutManager = LinearLayoutManager(parent.context, RecyclerView.HORIZONTAL, false)
                 setRecycledViewPool(pool)
+                addOnItemTouchListener(HorizontalGrab())
             }
             else -> inf.inflate(R.layout.item_music_row, parent, false)
         }
@@ -183,6 +184,44 @@ class MusicSectionsAdapter(private val act: MainActivity) : RecyclerView.Adapter
             v.setOnLongClickListener { MusicNav.menu(it, item); true }
         }
     }
+}
+
+/**
+ * Горизонтальный список внутри вкладок: пока палец ведёт вбок и списку есть куда листать — жест его,
+ * вкладки не перелистываются. Вертикальный жест отдаём общей прокрутке.
+ */
+class HorizontalGrab : RecyclerView.OnItemTouchListener {
+    private var x0 = 0f
+    private var y0 = 0f
+    private var decided = false
+
+    override fun onInterceptTouchEvent(rv: RecyclerView, e: android.view.MotionEvent): Boolean {
+        when (e.actionMasked) {
+            android.view.MotionEvent.ACTION_DOWN -> {
+                x0 = e.x
+                y0 = e.y
+                decided = false
+                rv.parent.requestDisallowInterceptTouchEvent(true)
+            }
+            android.view.MotionEvent.ACTION_MOVE -> if (!decided) {
+                val dx = e.x - x0
+                val dy = e.y - y0
+                val slop = android.view.ViewConfiguration.get(rv.context).scaledTouchSlop
+                if (kotlin.math.abs(dx) > slop || kotlin.math.abs(dy) > slop) {
+                    decided = true
+                    val horizontal = kotlin.math.abs(dx) > kotlin.math.abs(dy)
+                    val canScroll = rv.canScrollHorizontally(if (dx < 0) 1 else -1)
+                    rv.parent.requestDisallowInterceptTouchEvent(horizontal && canScroll)
+                }
+            }
+            android.view.MotionEvent.ACTION_UP, android.view.MotionEvent.ACTION_CANCEL ->
+                rv.parent.requestDisallowInterceptTouchEvent(false)
+        }
+        return false
+    }
+
+    override fun onTouchEvent(rv: RecyclerView, e: android.view.MotionEvent) {}
+    override fun onRequestDisallowInterceptTouchEvent(disallowIntercept: Boolean) {}
 }
 
 /** Вкладка «Музыка»: главная YouTube Music и библиотека. */
@@ -343,6 +382,9 @@ class MusicPageView(
             }
             v.findViewById<TextView>(R.id.mhTitle).text = p.title
             v.findViewById<TextView>(R.id.mhSub).text = p.subtitle
+            val sub = v.findViewById<TextView>(R.id.mhSubscribe)
+            val ch = p.channelId
+            if (ch != null && type == MusicItem.Type.ARTIST) sub.bindSubscribe(ch, p.subscribed) else sub.visibility = View.GONE
             v.findViewById<View>(R.id.mhButtons).visibility = if (p.tracks.isEmpty()) View.GONE else View.VISIBLE
             v.findViewById<View>(R.id.mhPlay).setOnClickListener { MusicNav.playTracks(act, p.tracks, 0) }
             v.findViewById<View>(R.id.mhShuffle).setOnClickListener { MusicNav.playTracks(act, p.tracks, 0, shuffle = true) }
@@ -363,6 +405,11 @@ class MusicScreen(private val act: MainActivity, val root: View) {
     private val repeat: ImageButton = root.findViewById(R.id.muRepeat)
     private val radio: TextView = root.findViewById(R.id.muRadio)
     private val queueBtn: TextView = root.findViewById(R.id.muQueue)
+    private val likeBtn: ImageButton = root.findViewById(R.id.muLike)
+    private val dislikeBtn: ImageButton = root.findViewById(R.id.muDislike)
+    private var infoFor: String? = null
+    private var likeStatus = "INDIFFERENT"
+    private var lyricsId: String? = null
     private var controller: MediaController? = null
     private val ui = Handler(Looper.getMainLooper())
     private var dragging = false
@@ -388,6 +435,8 @@ class MusicScreen(private val act: MainActivity, val root: View) {
         root.findViewById<View>(R.id.muNext).setOnClickListener { controller?.seekToNext() }
         root.findViewById<View>(R.id.muTimer).setOnClickListener { chooseSleep() }
         root.findViewById<View>(R.id.muLyrics).setOnClickListener { showLyrics() }
+        likeBtn.setOnClickListener { rate(if (likeStatus == "LIKE") "INDIFFERENT" else "LIKE") }
+        dislikeBtn.setOnClickListener { rate(if (likeStatus == "DISLIKE") "INDIFFERENT" else "DISLIKE") }
         play.setOnClickListener { controller?.let { if (it.isPlaying) it.pause() else it.play() } }
         queueBtn.setOnClickListener { showQueue(act) }
         shuffle.setOnClickListener {
@@ -497,6 +546,7 @@ class MusicScreen(private val act: MainActivity, val root: View) {
             cover.load(art?.let { big(it) }) { crossfade(true) }
         }
         play.setImageResource(if (c.isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
+        loadInfo(item.mediaId)
         updateModes()
         updateProgress()
         ui.removeCallbacks(tick)
@@ -504,8 +554,7 @@ class MusicScreen(private val act: MainActivity, val root: View) {
     }
 
     /** Обложки YouTube Music масштабируются параметром в ссылке: просим крупную. */
-    private fun big(url: String) = if (url.contains("googleusercontent.com") || url.contains("ggpht.com"))
-        url.replace(Regex("=w\\d+-h\\d+.*$"), "=w720-h720-l90-rj") else url
+    private fun big(url: String) = Music.sized(url, 720)
 
     private fun updateProgress() {
         val c = controller ?: return
@@ -553,11 +602,59 @@ class MusicScreen(private val act: MainActivity, val root: View) {
             .show()
     }
 
+    /** Оценка и ссылка на текст — один запрос на трек. */
+    private fun loadInfo(id: String) {
+        if (infoFor == id) return
+        infoFor = id
+        likeStatus = "INDIFFERENT"
+        lyricsId = null
+        updateLike()
+        Net.io.execute {
+            val info = runCatching { Music.trackInfo(id) }.onFailure { ErrorLog.log("Трек $id", it) }.getOrNull() ?: return@execute
+            act.runOnUiThread {
+                if (infoFor != id) return@runOnUiThread
+                likeStatus = info.likeStatus
+                lyricsId = info.lyricsId
+                updateLike()
+            }
+        }
+    }
+
+    private fun updateLike() {
+        val on = 0xFFFFFFFF.toInt()
+        val off = 0x99FFFFFF.toInt()
+        likeBtn.setColorFilter(if (likeStatus == "LIKE") act.getColor(R.color.link) else off)
+        dislikeBtn.setColorFilter(if (likeStatus == "DISLIKE") on else off)
+    }
+
+    private fun rate(status: String) {
+        val id = infoFor ?: return
+        if (!Auth.loggedIn) {
+            Toast.makeText(act, R.string.sign_in_needed, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val old = likeStatus
+        likeStatus = status
+        updateLike()
+        if (status == "LIKE") Toast.makeText(act, R.string.music_liked_toast, Toast.LENGTH_SHORT).show()
+        Net.io.execute {
+            val ok = runCatching { InnerTube.rate(id, status) }.onFailure { ErrorLog.log("Оценка $id", it) }.isSuccess
+            if (!ok) act.runOnUiThread {
+                if (infoFor == id) {
+                    likeStatus = old
+                    updateLike()
+                }
+                Toast.makeText(act, R.string.try_again, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     private fun showLyrics() {
         val id = controller?.currentMediaItem?.mediaId ?: return
+        val known = lyricsId.takeIf { infoFor == id }
         Toast.makeText(act, R.string.loading, Toast.LENGTH_SHORT).show()
         Net.io.execute {
-            val text = runCatching { Music.lyrics(id) }.onFailure { ErrorLog.log("Текст песни $id", it) }.getOrNull()
+            val text = runCatching { Music.lyrics(id, known) }.onFailure { ErrorLog.log("Текст песни $id", it) }.getOrNull()
             act.runOnUiThread {
                 if (act.isFinishing) return@runOnUiThread
                 val pad = (24 * act.resources.displayMetrics.density).toInt()

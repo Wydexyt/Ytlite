@@ -99,6 +99,7 @@ class PlaybackService : MediaSessionService() {
         setVideo(false) // видео включается, только когда открыт экран плеера
         player.addListener(watchTracker)
         applySound()
+        Queue.listen(queueListener)
         getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(networkCallback)
         Prefs.listen(prefsListener)
 
@@ -121,6 +122,7 @@ class PlaybackService : MediaSessionService() {
 
     override fun onDestroy() {
         instance = null
+        Queue.unlisten(queueListener)
         main.removeCallbacksAndMessages(null)
         releaseEffects()
         runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(networkCallback) }
@@ -459,6 +461,7 @@ class PlaybackService : MediaSessionService() {
 
         override fun onPlaybackStateChanged(state: Int) {
             if (state == Player.STATE_ENDED) onEnded()
+            if (state == Player.STATE_READY) prefetchNext()
         }
 
         override fun onAudioSessionIdChanged(audioSessionId: Int) = applySound()
@@ -517,6 +520,13 @@ class PlaybackService : MediaSessionService() {
     }
 
     // ---------- очередь и автовоспроизведение ----------
+
+    /** Пока играет текущее — заранее получить ссылки на следующее в очереди, чтобы переключение было мгновенным. */
+    private fun prefetchNext() {
+        Queue.items.firstOrNull()?.let { Streams.prefetch(it.id) }
+    }
+
+    private val queueListener: () -> Unit = { if (player.isPlaying) prefetchNext() }
 
     /** Растёт при каждом новом открытии: устаревшие фоновые загрузки не перебивают выбор пользователя. */
     private var playToken = 0
@@ -628,7 +638,27 @@ class PlaybackService : MediaSessionService() {
     )
 
     private inner class QueuePlayer(p: Player) : ForwardingPlayer(p) {
-        override fun getAvailableCommands(): Player.Commands = super.getAvailableCommands().buildUpon().addAll(*NAV).build()
+        private fun withNav(c: Player.Commands) = c.buildUpon().addAll(*NAV).build()
+        private val wrapped = HashMap<Player.Listener, Player.Listener>()
+
+        /**
+         * ExoPlayer сообщает подписчикам свои команды — без «следующего» (в плеере один ролик).
+         * Без подмены сессия передаёт это экранам, и кнопка «Следующий» в приложении перестаёт работать.
+         */
+        override fun addListener(listener: Player.Listener) {
+            val w = object : Player.Listener by listener {
+                override fun onAvailableCommandsChanged(availableCommands: Player.Commands) =
+                    listener.onAvailableCommandsChanged(withNav(availableCommands))
+            }
+            wrapped[listener] = w
+            super.addListener(w)
+        }
+
+        override fun removeListener(listener: Player.Listener) {
+            super.removeListener(wrapped.remove(listener) ?: listener)
+        }
+
+        override fun getAvailableCommands(): Player.Commands = withNav(super.getAvailableCommands())
         override fun isCommandAvailable(command: Int) = command in NAV || super.isCommandAvailable(command)
         override fun hasNextMediaItem() = true
         override fun hasPreviousMediaItem() = true

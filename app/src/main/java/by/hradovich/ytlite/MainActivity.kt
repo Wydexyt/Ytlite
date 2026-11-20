@@ -51,7 +51,6 @@ class MainActivity : Activity() {
     private val tabs = listOf(
         TabDef(R.string.tab_home, "FEwhat_to_watch", false, R.id.navHome),
         TabDef(R.string.tab_subs, "FEsubscriptions", true, R.id.navSubs),
-        TabDef(R.string.tab_history, "FEhistory", true, R.id.navHistory),
     )
 
     private lateinit var pager: ViewPager2
@@ -94,6 +93,7 @@ class MainActivity : Activity() {
     private lateinit var player: PlayerScreen
     private lateinit var music: MusicScreen
     private lateinit var musicTab: MusicTab
+    private lateinit var libraryTab: LibraryTab
     private var started = false
 
     // мини-плеер
@@ -152,6 +152,7 @@ class MainActivity : Activity() {
         player = PlayerScreen(this, panel)
         music = MusicScreen(this, findViewById(R.id.musicPlayer))
         musicTab = MusicTab(this, pager)
+        libraryTab = LibraryTab(this, pager)
 
         // Вкладки: каждая — отдельная лента, живут все три (кэш и позиция сохраняются)
         feeds = tabs.map { t ->
@@ -159,8 +160,8 @@ class MainActivity : Activity() {
                 InnerTube.browse(t.browseId)
             }
         }
-        // Последняя вкладка — «Музыка»
-        val pageViews = feeds.map { it.root } + musicTab.root
+        // После лент — «Музыка» и «Библиотека»
+        val pageViews = feeds.map { it.root } + musicTab.root + libraryTab.root
         pager.offscreenPageLimit = pageViews.size
         pager.adapter = object : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
             override fun getItemCount() = pageViews.size
@@ -176,20 +177,26 @@ class MainActivity : Activity() {
         pager.registerOnPageChangeCallback(object : ViewPager2.OnPageChangeCallback() {
             override fun onPageSelected(position: Int) {
                 navItems.forEachIndexed { i, v -> v.alpha = if (i == position) 1f else 0.55f }
-                if (position == MUSIC_TAB) {
-                    if (!musicTab.loaded) musicTab.load()
-                } else if (!feeds[position].loaded) feeds[position].load()
+                when (position) {
+                    MUSIC_TAB -> if (!musicTab.loaded) musicTab.load()
+                    LIBRARY_TAB -> if (!libraryTab.loaded) libraryTab.load()
+                    else -> if (!feeds[position].loaded) feeds[position].load()
+                }
                 query.setHint(if (position == MUSIC_TAB) R.string.music_search_hint else R.string.search_hint)
             }
         })
 
-        navItems = tabs.map { findViewById<View>(it.navId) } + findViewById<View>(R.id.navMusic)
+        navItems = tabs.map { findViewById<View>(it.navId) } + findViewById<View>(R.id.navMusic) + findViewById<View>(R.id.navLibrary)
         navItems.forEachIndexed { i, v ->
             v.setOnClickListener {
                 closeAllPages()
                 if (searchContainer.visibility == View.VISIBLE) exitSearch()
                 if (pager.currentItem == i) {
-                    if (i == MUSIC_TAB) musicTab.scrollTop() else feeds[i].scrollTop()
+                    when (i) {
+                        MUSIC_TAB -> musicTab.scrollTop()
+                        LIBRARY_TAB -> libraryTab.scrollTop()
+                        else -> feeds[i].scrollTop()
+                    }
                 } else pager.setCurrentItem(i, false)
             }
         }
@@ -435,6 +442,8 @@ class MainActivity : Activity() {
 
     fun onMusicHidden() = updateMini()
 
+    fun openHistory() = openPage(HistoryPage(this, pagesBox))
+
     fun openPlaylist(id: String) {
         if (player.expanded) collapsePlayer()
         openPage(PlaylistPage(this, pagesBox, id))
@@ -542,6 +551,7 @@ class MainActivity : Activity() {
         feeds.forEach { it.reset() }
         searchFeed.reset()
         musicTab.reset()
+        if (libraryTab.loaded) libraryTab.reset()
         feeds.forEach { it.load() }
         if (searchQuery.isNotEmpty()) searchFeed.load()
     }
@@ -556,7 +566,6 @@ class MainActivity : Activity() {
         }
         menu.menu.add(1, ADD, 100, R.string.add_account)
         if (active != null) menu.menu.add(1, LOGOUT, 101, R.string.logout)
-        if (active != null) menu.menu.add(2, LIBRARY, 102, R.string.library)
         menu.menu.add(2, STATS, 102, R.string.stats)
         menu.menu.add(2, QUALITY_WIFI, 103, getString(R.string.quality_wifi, qualityName(Prefs.qualityWifi)))
         menu.menu.add(2, QUALITY_MOBILE, 104, getString(R.string.quality_mobile, qualityName(Prefs.qualityMobile)))
@@ -581,7 +590,6 @@ class MainActivity : Activity() {
                     .setNegativeButton(R.string.cancel, null)
                     .show()
                 STATS -> openStats()
-                LIBRARY -> openPage(LibraryPage(this, pagesBox))
                 QUALITY_WIFI -> chooseQuality(true)
                 QUALITY_MOBILE -> chooseQuality(false)
                 SPONSOR -> showSponsorSettings()
@@ -829,7 +837,8 @@ class MainActivity : Activity() {
 
     companion object {
         const val EXTRA_EXPAND = "expand"
-        private const val MUSIC_TAB = 3
+        private const val MUSIC_TAB = 2
+        private const val LIBRARY_TAB = 3
         private const val ADD = Menu.FIRST + 1000
         private const val LOGOUT = Menu.FIRST + 1001
         private const val QUALITY_WIFI = Menu.FIRST + 1002
@@ -843,7 +852,6 @@ class MainActivity : Activity() {
         private const val ROLLBACK = Menu.FIRST + 1010
         private const val SOUND = Menu.FIRST + 1011
         private const val PIP = Menu.FIRST + 1012
-        private const val LIBRARY = Menu.FIRST + 1013
     }
 }
 

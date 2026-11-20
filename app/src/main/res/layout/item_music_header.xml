@@ -34,6 +34,17 @@
         android:textColor="@color/sub"
         android:textSize="13sp" />
 
+    <TextView
+        android:id="@+id/mhSubscribe"
+        style="@style/Chip"
+        android:layout_width="wrap_content"
+        android:layout_height="36dp"
+        android:layout_marginTop="12dp"
+        android:layout_marginEnd="0dp"
+        android:paddingHorizontal="20dp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+
     <LinearLayout
         android:id="@+id/mhButtons"
         android:layout_width="match_parent"

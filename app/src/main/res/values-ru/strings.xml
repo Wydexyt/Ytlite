@@ -193,6 +193,9 @@
     <string name="radio_off">После очереди — тишина</string>
     <string name="sleep_end_track">В конце трека</string>
     <string name="loading">Загрузка…</string>
+    <string name="dislike">Не нравится</string>
+    <string name="music_liked_toast">Добавлено в «Понравившуюся музыку»</string>
+    <string name="tab_library">Библиотека</string>
     <plurals name="replies">
         <item quantity="one">%1$s ответ</item>
         <item quantity="few">%1$s ответа</item>

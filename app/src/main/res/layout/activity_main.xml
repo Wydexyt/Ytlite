@@ -219,14 +219,14 @@
             <TextView style="@style/NavLabel" android:text="@string/tab_subs" />
         </LinearLayout>
 
-        <LinearLayout android:id="@+id/navHistory" style="@style/NavItem">
-            <ImageView style="@style/NavIcon" android:src="@drawable/ic_history" />
-            <TextView style="@style/NavLabel" android:text="@string/tab_history" />
-        </LinearLayout>
-
         <LinearLayout android:id="@+id/navMusic" style="@style/NavItem">
             <ImageView style="@style/NavIcon" android:src="@drawable/ic_music" />
             <TextView style="@style/NavLabel" android:text="@string/tab_music" />
+        </LinearLayout>
+
+        <LinearLayout android:id="@+id/navLibrary" style="@style/NavItem">
+            <ImageView style="@style/NavIcon" android:src="@drawable/ic_library" />
+            <TextView style="@style/NavLabel" android:text="@string/tab_library" />
         </LinearLayout>
     </LinearLayout>
 </LinearLayout>

@@ -199,6 +199,9 @@
     <string name="radio_off">After the queue — stop</string>
     <string name="sleep_end_track">End of track</string>
     <string name="loading">Loading…</string>
+    <string name="dislike">Dislike</string>
+    <string name="music_liked_toast">Added to Liked music</string>
+    <string name="tab_library">Library</string>
     <plurals name="replies">
         <item quantity="one">%1$s reply</item>
         <item quantity="other">%1$s replies</item>
