@@ -245,6 +245,27 @@ class PlaybackService : MediaSessionService() {
     private fun reapplyQuality() {
         val id = player.currentMediaItem?.mediaId ?: return
         applyQuality(resolved[id])
+        qualityFor = null
+        if (selectQuality()) qualityFor = id
+    }
+
+    /** Видео, для которого качество уже выбрано автоматически (дальше — только ручной выбор). */
+    private var qualityFor: String? = null
+
+    /**
+     * Явно выбрать поток нужного качества: самый высокий не выше настройки (по меньшей стороне кадра),
+     * а если такого нет — самый низкий. Надёжнее мягкого ограничения размера.
+     */
+    private fun selectQuality(): Boolean {
+        val q = (if (onWifi()) Prefs.qualityWifi else Prefs.qualityMobile).takeIf { it > 0 } ?: Int.MAX_VALUE
+        val groups = player.currentTracks.groups.filter { it.type == C.TRACK_TYPE_VIDEO && it.length > 0 }
+        if (groups.isEmpty()) return false
+        fun h(g: androidx.media3.common.Tracks.Group) = g.getTrackFormat(0).let { minOf(it.width, it.height) }
+        val best = groups.filter { h(it) in 1..q }.maxByOrNull { h(it) } ?: groups.minByOrNull { h(it) } ?: return false
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .setOverrideForType(androidx.media3.common.TrackSelectionOverride(best.mediaTrackGroup, 0))
+            .build()
+        return true
     }
 
     private fun onWifi(): Boolean {
@@ -405,6 +426,12 @@ class PlaybackService : MediaSessionService() {
     }
 
     private val watchTracker = object : Player.Listener {
+        /** Как только у видео известны доступные качества — выбрать по настройке (один раз на видео). */
+        override fun onTracksChanged(tracks: androidx.media3.common.Tracks) {
+            val id = player.currentMediaItem?.mediaId ?: return
+            if (qualityFor != id && selectQuality()) qualityFor = id
+        }
+
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             scheduleSkips()
             if (mediaItem != null) Stats.video()
