@@ -188,10 +188,12 @@ class VideoAdapter(private val onClick: (Video) -> Unit) : RecyclerView.Adapter<
         h.itemView.setOnLongClickListener { showMenu(it, v); true }
     }
 
-    /** Меню долгого тапа: «Не интересует», «Поделиться», «Открыть канал». */
+    /** Меню долгого тапа: очередь, «Не интересует», «Поделиться», «Открыть канал». */
     private fun showMenu(anchor: View, v: Video) {
         val ctx = anchor.context
         val menu = PopupMenu(ctx, anchor)
+        menu.menu.add(0, 4, 0, R.string.play_next)
+        menu.menu.add(0, 5, 0, R.string.add_to_queue)
         if (v.notInterestedToken != null && Auth.loggedIn) menu.menu.add(0, 1, 0, R.string.not_interested)
         menu.menu.add(0, 2, 1, R.string.share)
         if (v.channelId != null) menu.menu.add(0, 3, 2, R.string.open_channel)
@@ -206,6 +208,12 @@ class VideoAdapter(private val onClick: (Video) -> Unit) : RecyclerView.Adapter<
                     }
                 }
                 2 -> Share.video(ctx, v.id, v.title)
+                4, 5 -> {
+                    val svc = PlaybackService.instance
+                    if (svc != null) svc.enqueue(QItem.of(v), next = item.itemId == 4)
+                    else if (item.itemId == 4) Queue.addNext(QItem.of(v)) else Queue.addLast(QItem.of(v))
+                    Toast.makeText(ctx, if (item.itemId == 4) R.string.queued_next else R.string.queued, Toast.LENGTH_SHORT).show()
+                }
                 3 -> v.channelId?.let { ctx.openChannel(it) }
             }
             true

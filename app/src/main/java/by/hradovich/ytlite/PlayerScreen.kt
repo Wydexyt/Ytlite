@@ -112,8 +112,9 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
         chapterView = root.findViewById(R.id.chapter)
         details = root.findViewById(R.id.details)
 
-        view.setShowNextButton(false)
-        view.setShowPreviousButton(false)
+        // «Следующее» — из очереди или по автовоспроизведению, «Предыдущее» — в начало / к прошлому видео
+        view.setShowNextButton(true)
+        view.setShowPreviousButton(true)
         view.setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
         // Кнопка ставит конкретную ориентацию (а не переключает), поэтому повторный вызов безопасен
         view.setFullscreenButtonClickListener { full -> setLandscape(full) }
@@ -441,9 +442,44 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
         val vs = c.videoSize
         val q = if (vs.height > 0) "${minOf(vs.width, vs.height)}p" else "—"
         val speed = c.playbackParameters.speed
+        val rows = mutableListOf<Options.Row>(
+            Options.Action(act.getString(R.string.quality_is, q)) { chooseQuality(c) },
+            Options.Action(act.getString(R.string.speed_is, speedName(speed))) { chooseSpeed(c) },
+            Options.Action(act.getString(R.string.sleep_is, sleepText())) { chooseSleep() },
+            Options.Action(act.getString(R.string.queue_is, Queue.items.size)) { showQueue(act) },
+            Options.Toggle(act.getString(R.string.autoplay), Prefs.autoplay) { Prefs.autoplay = it },
+        )
+        if (android.os.Build.VERSION.SDK_INT >= 28) {
+            rows += Options.Toggle(act.getString(R.string.night_mode), Prefs.nightMode, act.getString(R.string.night_mode_hint)) {
+                Prefs.nightMode = it
+            }
+        }
+        Options.show(act, null, rows)
+    }
+
+    private fun sleepText(): String {
+        val s = PlaybackService.instance ?: return act.getString(R.string.off)
+        return when {
+            s.sleepAtEnd -> act.getString(R.string.sleep_end)
+            s.sleepAt > 0 -> act.getString(R.string.sleep_left, ((s.sleepAt - android.os.SystemClock.elapsedRealtime()) / 60_000 + 1).toInt())
+            else -> act.getString(R.string.off)
+        }
+    }
+
+    private fun chooseSleep() {
+        val values = intArrayOf(0, 15, 30, 45, 60, -1)
+        val names = values.map {
+            when {
+                it == 0 -> act.getString(R.string.off)
+                it < 0 -> act.getString(R.string.sleep_end)
+                else -> act.getString(R.string.minutes, it)
+            }
+        }.toTypedArray()
         AlertDialog.Builder(act)
-            .setItems(arrayOf(act.getString(R.string.quality_is, q), act.getString(R.string.speed_is, speedName(speed)))) { _, which ->
-                if (which == 0) chooseQuality(c) else chooseSpeed(c)
+            .setTitle(R.string.sleep)
+            .setItems(names) { _, i ->
+                PlaybackService.instance?.setSleep(values[i])
+                if (values[i] != 0) Toast.makeText(act, act.getString(R.string.sleep_set, names[i].lowercase()), Toast.LENGTH_SHORT).show()
             }
             .show()
     }
@@ -466,6 +502,7 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
             .setTitle(R.string.speed)
             .setSingleChoiceItems(values.map { speedName(it) }.toTypedArray(), cur) { d, i ->
                 c.setPlaybackSpeed(values[i])
+                Prefs.speed = values[i] // и для следующих видео
                 d.dismiss()
             }
             .show()
@@ -1028,8 +1065,20 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
         }
     }
 
+    /** Картинка в картинке: только видео, без кнопок и описания. */
+    var pip = false
+        private set
+
+    fun setPip(on: Boolean) {
+        pip = on
+        view.useController = !on
+        if (on) view.hideController()
+        overlay.visibility = if (on) View.GONE else View.VISIBLE
+        applyLayout()
+    }
+
     private fun applyLayout() {
-        val land = isLandscape
+        val land = isLandscape || pip
         val lp = playerBox.layoutParams as LinearLayout.LayoutParams
         if (land) {
             lp.height = ViewGroup.LayoutParams.MATCH_PARENT
@@ -1044,7 +1093,7 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
         view.setFullscreenButtonState(land)
         if (!land) view.resizeMode = androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
         // В полноэкранном режиме — под скрытыми системными панелями, чтобы кадр был ровно по центру
-        val full = land && expanded
+        val full = land && expanded && !pip
         WindowCompat.setDecorFitsSystemWindows(act.window, !full)
 
         val ic = WindowCompat.getInsetsController(act.window, act.window.decorView)

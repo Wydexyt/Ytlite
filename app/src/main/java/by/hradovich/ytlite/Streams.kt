@@ -34,6 +34,8 @@ class Resolved(
     val title: String,
     val uploader: String,
     val thumb: String?,
+    /** Насколько ролик громче эталона YouTube, дБ (playerConfig.audioConfig.loudnessDb). */
+    val loudnessDb: Float? = null,
 ) {
     val portrait: Boolean get() = videos.firstOrNull()?.let { it.height > it.width } ?: false
 }
@@ -84,8 +86,9 @@ object Streams {
     }
 
     private fun resolve(id: String): Resolved {
+        val extractor = ServiceList.YouTube.getStreamExtractor("https://www.youtube.com/watch?v=$id")
         val info = try {
-            StreamInfo.getInfo(ServiceList.YouTube, "https://www.youtube.com/watch?v=$id")
+            StreamInfo.getInfo(extractor)
         } catch (e: Exception) {
             val age = e is AgeRestrictedContentException ||
                 e.message?.contains("age", ignoreCase = true) == true ||
@@ -131,7 +134,8 @@ object Streams {
                 ?: throw IllegalStateException(Lang.str(R.string.err_no_streams))
             return Resolved(
                 listOf(Src(muxed.content, null, muxed.width, muxed.height)), null,
-                info.name, info.uploaderName.orEmpty(), info.thumbnails.maxByOrNull { it.width }?.url
+                info.name, info.uploaderName.orEmpty(), info.thumbnails.maxByOrNull { it.width }?.url,
+                loudness(extractor)
             )
         }
 
@@ -141,8 +145,21 @@ object Streams {
             title = info.name,
             uploader = info.uploaderName.orEmpty(),
             thumb = info.thumbnails.maxByOrNull { it.width }?.url,
+            loudnessDb = loudness(extractor),
         )
     }
+
+    /** Громкость ролика из ответа /player, который NewPipe держит внутри (поля библиотеки не обфусцируются). */
+    private fun loudness(ex: Any): Float? = runCatching {
+        var c: Class<*>? = ex.javaClass
+        var resp: Any? = null
+        while (c != null && resp == null) {
+            resp = runCatching { c!!.getDeclaredField("playerResponse").apply { isAccessible = true }.get(ex) }.getOrNull()
+            c = c.superclass
+        }
+        val audio = ((resp as? Map<*, *>)?.get("playerConfig") as? Map<*, *>)?.get("audioConfig") as? Map<*, *>
+        (audio?.get("loudnessDb") as? Number)?.toFloat()
+    }.getOrNull()
 
     private fun mpd(url: String, itag: ItagItem?, method: DeliveryMethod, dur: Long): String? {
         itag ?: return null
@@ -279,6 +296,8 @@ object AccountStreams {
             title = details?.optString("title").orEmpty(),
             uploader = details?.optString("author").orEmpty(),
             thumb = thumbs?.let { it.optJSONObject(it.length() - 1)?.optString("url") },
+            loudnessDb = j.optJSONObject("playerConfig")?.optJSONObject("audioConfig")?.optDouble("loudnessDb")
+                ?.takeIf { !it.isNaN() }?.toFloat(),
         )
     }
 

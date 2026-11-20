@@ -270,7 +270,11 @@ class MainActivity : Activity() {
         }, ContextCompat.getMainExecutor(this))
     }
 
+    private var leftPipAt = 0L
+
     override fun onStop() {
+        // окно «картинки в картинке» закрыли — как в YouTube, видео останавливается
+        if (android.os.SystemClock.elapsedRealtime() - leftPipAt < 1500) controller?.pause()
         started = false
         updateVideoTrack() // окно скрыто — дальше только звук
         ui.removeCallbacks(tick)
@@ -510,6 +514,8 @@ class MainActivity : Activity() {
         menu.menu.add(2, QUALITY_WIFI, 103, getString(R.string.quality_wifi, qualityName(Prefs.qualityWifi)))
         menu.menu.add(2, QUALITY_MOBILE, 104, getString(R.string.quality_mobile, qualityName(Prefs.qualityMobile)))
         menu.menu.add(2, SPONSOR, 105, R.string.sponsorblock_menu)
+        menu.menu.add(2, SOUND, 105, R.string.sound_menu)
+        menu.menu.add(2, PIP, 105, R.string.pip).apply { isCheckable = true; isChecked = Prefs.pip }
         menu.menu.add(2, LANGUAGE, 106, getString(R.string.language_menu, languageName(Prefs.language)))
         menu.menu.add(3, LOG, 107, R.string.error_log)
         menu.menu.add(3, CHANNEL, 108, getString(R.string.channel_menu, getString(if (Prefs.channel == "beta") R.string.channel_beta else R.string.channel_stable)))
@@ -531,6 +537,8 @@ class MainActivity : Activity() {
                 QUALITY_WIFI -> chooseQuality(true)
                 QUALITY_MOBILE -> chooseQuality(false)
                 SPONSOR -> showSponsorSettings()
+                SOUND -> showSound()
+                PIP -> togglePip()
                 LANGUAGE -> chooseLanguage()
                 UPDATE -> Updates.check(this, force = true)
                 CHANNEL -> chooseChannel()
@@ -547,6 +555,70 @@ class MainActivity : Activity() {
             true
         }
         menu.show()
+    }
+
+    // ---------- звук, картинка в картинке ----------
+
+    private fun showSound() {
+        val boosts = intArrayOf(0, 3, 6, 10)
+        fun boostName(b: Int) = if (b == 0) getString(R.string.off) else "+$b dB"
+        Options.show(
+            this, getString(R.string.sound), listOf(
+                Options.Toggle(getString(R.string.normalize), Prefs.normalize, getString(R.string.normalize_hint)) { Prefs.normalize = it },
+                Options.Action(getString(R.string.boost_is, boostName(Prefs.boostDb))) {
+                    AlertDialog.Builder(this)
+                        .setTitle(R.string.boost)
+                        .setSingleChoiceItems(boosts.map { boostName(it) }.toTypedArray(), boosts.indexOf(Prefs.boostDb)) { d, i ->
+                            d.dismiss()
+                            Prefs.boostDb = boosts[i]
+                            if (boosts[i] > 0) Toast.makeText(this, R.string.battery_more, Toast.LENGTH_LONG).show()
+                        }
+                        .show()
+                },
+            )
+        )
+    }
+
+    private fun togglePip() {
+        if (Prefs.pip) {
+            Prefs.pip = false
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle(R.string.pip)
+            .setMessage(R.string.pip_warning)
+            .setPositiveButton(R.string.enable) { _, _ -> Prefs.pip = true }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    /** Выход на рабочий стол с развёрнутым видео — продолжить в маленьком окне. */
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        val c = controller ?: return
+        if (!Prefs.pip || !player.expanded || !c.isPlaying || PlaybackService.audioOnly ||
+            PlaybackService.instance?.isMusic(c.currentMediaItem) == true
+        ) return
+        val vs = c.videoSize
+        val ratio = if (vs.width > 0 && vs.height > 0) {
+            // Android принимает соотношение от 1:2.39 до 2.39:1
+            val r = vs.width.toFloat() / vs.height
+            when {
+                r > 2.39f -> android.util.Rational(239, 100)
+                r < 1 / 2.39f -> android.util.Rational(100, 239)
+                else -> android.util.Rational(vs.width, vs.height)
+            }
+        } else android.util.Rational(16, 9)
+        runCatching {
+            enterPictureInPictureMode(android.app.PictureInPictureParams.Builder().setAspectRatio(ratio).build())
+        }.onFailure { ErrorLog.log("Картинка в картинке", it) }
+    }
+
+    override fun onPictureInPictureModeChanged(isInPictureInPictureMode: Boolean, newConfig: Configuration) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        player.setPip(isInPictureInPictureMode)
+        if (!isInPictureInPictureMode) leftPipAt = android.os.SystemClock.elapsedRealtime()
+        updateVideoTrack()
     }
 
     private fun chooseChannel() {
@@ -717,6 +789,8 @@ class MainActivity : Activity() {
         private const val LANGUAGE = Menu.FIRST + 1008
         private const val CHANNEL = Menu.FIRST + 1009
         private const val ROLLBACK = Menu.FIRST + 1010
+        private const val SOUND = Menu.FIRST + 1011
+        private const val PIP = Menu.FIRST + 1012
     }
 }
 

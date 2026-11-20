@@ -2,6 +2,7 @@ package by.hradovich.ytlite
 
 import android.app.PendingIntent
 import android.content.Intent
+import android.media.audiofx.DynamicsProcessing
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.net.Uri
@@ -11,6 +12,7 @@ import android.widget.Toast
 import androidx.annotation.OptIn
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
+import androidx.media3.common.ForwardingPlayer
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
@@ -61,6 +63,7 @@ class PlaybackService : MediaSessionService() {
 
     override fun onCreate() {
         super.onCreate()
+        instance = this
 
         // Буфер до 10 минут: модем скачивает большой кусок и надолго засыпает,
         // вместо того чтобы постоянно понемногу докачивать. Лимит 40 МБ — чтобы
@@ -95,6 +98,7 @@ class PlaybackService : MediaSessionService() {
             .build()
         setVideo(false) // видео включается, только когда открыт экран плеера
         player.addListener(watchTracker)
+        applySound()
         getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(networkCallback)
         Prefs.listen(prefsListener)
 
@@ -102,7 +106,8 @@ class PlaybackService : MediaSessionService() {
             this, 0, Intent(this, MainActivity::class.java).putExtra(MainActivity.EXTRA_EXPAND, true),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-        session = MediaSession.Builder(this, player)
+        // Кнопки «следующее/предыдущее» (в уведомлении, на экране блокировки и в плеере) — наша очередь
+        session = MediaSession.Builder(this, QueuePlayer(player))
             .setCallback(callback)
             .setSessionActivity(open)
             .build()
@@ -115,6 +120,9 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        instance = null
+        main.removeCallbacksAndMessages(null)
+        releaseEffects()
         runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(networkCallback) }
         Prefs.unlisten(prefsListener)
         closeSeg()
@@ -144,6 +152,7 @@ class PlaybackService : MediaSessionService() {
             mediaItems: MutableList<MediaItem>,
         ): ListenableFuture<MutableList<MediaItem>> {
             val f = SettableFuture.create<MutableList<MediaItem>>()
+            playToken++ // открыто вручную — отменить ещё не начавшееся автовоспроизведение
             Net.io.execute {
                 try {
                     val items = mediaItems.map { prepare(it) }.toMutableList()
@@ -240,6 +249,8 @@ class PlaybackService : MediaSessionService() {
 
     private val prefsListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
         if (key == "quality" || key == "qualityMobile") main.post { reapplyQuality() }
+        if (key == "boostDb" || key == "nightMode") main.post { applySound() }
+        if (key == "normalize") main.post { applyVolume() }
     }
 
     private fun reapplyQuality() {
@@ -284,10 +295,10 @@ class PlaybackService : MediaSessionService() {
         return item.buildUpon()
             .setUri("https://www.youtube.com/watch?v=$id")
             .setMediaMetadata(
-                MediaMetadata.Builder()
+                item.mediaMetadata.buildUpon()
                     .setTitle(r.title)
-                    .setArtist(r.uploader)
-                    .setArtworkUri(r.thumb?.let { Uri.parse(it) })
+                    .setArtist(item.mediaMetadata.artist ?: r.uploader)
+                    .setArtworkUri(item.mediaMetadata.artworkUri ?: r.thumb?.let { Uri.parse(it) })
                     .build()
             )
             .build()
@@ -434,8 +445,21 @@ class PlaybackService : MediaSessionService() {
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             scheduleSkips()
-            if (mediaItem != null) Stats.video()
+            if (mediaItem == null) return
+            Stats.video()
+            val md = mediaItem.mediaMetadata
+            val music = isMusic(mediaItem)
+            Queue.played(QItem(mediaItem.mediaId, md.title?.toString().orEmpty(), md.artist?.toString().orEmpty(), md.artworkUri?.toString(), music))
+            player.setPlaybackSpeed(if (music) 1f else Prefs.speed)
+            if (music) setVideo(false)
+            applyVolume()
         }
+
+        override fun onPlaybackStateChanged(state: Int) {
+            if (state == Player.STATE_ENDED) onEnded()
+        }
+
+        override fun onAudioSessionIdChanged(audioSessionId: Int) = applySound()
 
         override fun onTrackSelectionParametersChanged(parameters: androidx.media3.common.TrackSelectionParameters) {
             // включили/выключили видео посреди воспроизведения — новый отрезок
@@ -490,10 +514,233 @@ class PlaybackService : MediaSessionService() {
         }
     }
 
+    // ---------- очередь и автовоспроизведение ----------
+
+    /** Растёт при каждом новом открытии: устаревшие фоновые загрузки не перебивают выбор пользователя. */
+    private var playToken = 0
+
+    fun isMusic(item: MediaItem?) = item?.mediaMetadata?.extras?.getBoolean(EXTRA_MUSIC) == true
+
+    /** Включить элемент очереди (потоки получаем в фоне). */
+    fun play(q: QItem) {
+        val token = ++playToken
+        Streams.prefetch(q.id)
+        Net.io.execute {
+            val item = runCatching {
+                prepare(
+                    MediaItem.Builder().setMediaId(q.id).setMediaMetadata(
+                        MediaMetadata.Builder().setTitle(q.title).setArtist(q.channel.ifEmpty { null })
+                            .setArtworkUri(q.thumb?.let { Uri.parse(it) })
+                            .setExtras(android.os.Bundle().apply { putBoolean(EXTRA_MUSIC, q.music) })
+                            .build()
+                    ).build()
+                )
+            }.onFailure { ErrorLog.log("Очередь ${q.id}", it) }.getOrNull()
+            main.post {
+                if (token != playToken) return@post
+                if (item == null) {
+                    // не открылось (например, 18+) — дальше по очереди
+                    Toast.makeText(this, getString(R.string.open_failed, q.title), Toast.LENGTH_SHORT).show()
+                    playNext(fromUser = false)
+                    return@post
+                }
+                saveResume()
+                applyQuality(resolved[q.id])
+                qualityFor = null
+                player.setMediaItem(item, if (q.music) 0 else Prefs.resumePosition(q.id))
+                player.prepare()
+                player.play()
+            }
+        }
+    }
+
+    /** Добавить в очередь; если ничего не играет — сразу включить. */
+    fun enqueue(q: QItem, next: Boolean) {
+        if (player.currentMediaItem == null || player.playbackState == Player.STATE_IDLE) {
+            play(q)
+            return
+        }
+        if (next) Queue.addNext(q) else Queue.addLast(q)
+    }
+
+    private fun onEnded() {
+        if (sleepAtEnd) {
+            sleepAtEnd = false
+            listeners()
+            return
+        }
+        playNext(fromUser = false)
+    }
+
+    /**
+     * Следующее: из очереди, иначе — по автовоспроизведению (рекомендации для видео, «радио» для музыки).
+     * Кнопка «следующее» работает всегда, даже с выключенным автовоспроизведением.
+     */
+    fun playNext(fromUser: Boolean) {
+        Queue.poll()?.let { play(it); return }
+        val cur = player.currentMediaItem ?: return
+        val music = isMusic(cur)
+        if (!fromUser && !(if (music) Prefs.musicRadio else Prefs.autoplay)) return
+        val token = ++playToken
+        val seen = Queue.history.map { it.id }.toSet()
+        Net.io.execute {
+            val next = runCatching { autoNext(cur.mediaId, music, seen) }
+                .onFailure { ErrorLog.log("Автовоспроизведение ${cur.mediaId}", it) }.getOrNull()
+            main.post {
+                if (token != playToken || next.isNullOrEmpty()) return@post
+                // для музыки «радио» — сразу несколько треков в очередь
+                Queue.addAll(next.drop(1))
+                play(next.first())
+            }
+        }
+    }
+
+    private fun autoNext(id: String, music: Boolean, seen: Set<String>): List<QItem> =
+        if (music) Music.radio(id).filter { it.id !in seen }
+        else InnerTube.next(id).related.items.filter { !it.isChannel && it.id !in seen }.take(1).map { QItem.of(it) }
+
+    /** «Назад»: в начало ролика, а в самом начале — к предыдущему. */
+    fun playPrevious() {
+        val cur = player.currentMediaItem
+        val h = Queue.history
+        if (player.currentPosition > 3000 || cur == null || h.size < 2) {
+            player.seekTo(0)
+            return
+        }
+        val now = h.removeAt(h.size - 1)
+        val prev = h.removeAt(h.size - 1)
+        Queue.addNext(now)
+        play(prev)
+    }
+
+    private val NAV = intArrayOf(
+        Player.COMMAND_SEEK_TO_NEXT, Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
+        Player.COMMAND_SEEK_TO_PREVIOUS, Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
+    )
+
+    private inner class QueuePlayer(p: Player) : ForwardingPlayer(p) {
+        override fun getAvailableCommands(): Player.Commands = super.getAvailableCommands().buildUpon().addAll(*NAV).build()
+        override fun isCommandAvailable(command: Int) = command in NAV || super.isCommandAvailable(command)
+        override fun hasNextMediaItem() = true
+        override fun hasPreviousMediaItem() = true
+        override fun seekToNext() = playNext(fromUser = true)
+        override fun seekToNextMediaItem() = playNext(fromUser = true)
+        override fun seekToPrevious() = playPrevious()
+        override fun seekToPreviousMediaItem() = playPrevious()
+    }
+
+    // ---------- звук: выравнивание, усиление, ночной режим ----------
+
+    private var enhancer: android.media.audiofx.LoudnessEnhancer? = null
+    private var dynamics: android.media.audiofx.AudioEffect? = null
+    private var fade = 1f
+
+    private fun releaseEffects() {
+        runCatching { enhancer?.release() }
+        runCatching { dynamics?.release() }
+        enhancer = null
+        dynamics = null
+    }
+
+    /** Эффекты висят на аудиосессии плеера. С ними звук идёт через процессор — offload выключаем. */
+    private fun applySound() {
+        releaseEffects()
+        val session = player.audioSessionId
+        val boost = Prefs.boostDb
+        val night = Prefs.nightMode && android.os.Build.VERSION.SDK_INT >= 28
+        if (session != C.AUDIO_SESSION_ID_UNSET) {
+            if (boost > 0) enhancer = runCatching {
+                android.media.audiofx.LoudnessEnhancer(session).apply { setTargetGain(boost * 100); enabled = true }
+            }.onFailure { ErrorLog.log("Усиление звука", it) }.getOrNull()
+            if (night && android.os.Build.VERSION.SDK_INT >= 28) dynamics = runCatching { nightMode(session) }
+                .onFailure { ErrorLog.log("Ночной режим", it) }.getOrNull()
+        }
+        val offload = enhancer == null && dynamics == null
+        player.trackSelectionParameters = player.trackSelectionParameters.buildUpon()
+            .setAudioOffloadPreferences(
+                AudioOffloadPreferences.Builder().setAudioOffloadMode(
+                    if (offload) AudioOffloadPreferences.AUDIO_OFFLOAD_MODE_ENABLED else AudioOffloadPreferences.AUDIO_OFFLOAD_MODE_DISABLED
+                ).build()
+            ).build()
+    }
+
+    /** Компрессор: тихое громче, громкое тише (как «ночной режим» в телевизорах) + ограничитель от перегруза. */
+    @androidx.annotation.RequiresApi(28)
+    private fun nightMode(session: Int): DynamicsProcessing {
+        val cfg = DynamicsProcessing.Config.Builder(
+            DynamicsProcessing.VARIANT_FAVOR_FREQUENCY_RESOLUTION, 2, false, 0, true, 1, false, 0, true
+        ).build()
+        return DynamicsProcessing(0, session, cfg).apply {
+            setMbcBandAllChannelsTo(0, DynamicsProcessing.MbcBand(true, 20000f, 5f, 200f, 4f, -30f, 6f, -90f, 1f, 0f, 9f))
+            setLimiterAllChannelsTo(DynamicsProcessing.Limiter(true, true, 0, 1f, 60f, 10f, -2f, 0f))
+            enabled = true
+        }
+    }
+
+    /** Громкие ролики приглушаем до эталона YouTube (только ослабление — работает и с offload). */
+    private fun applyVolume() {
+        val loud = player.currentMediaItem?.mediaId?.let { resolved[it]?.loudnessDb } ?: 0f
+        val base = if (Prefs.normalize && loud > 0) Math.pow(10.0, -loud / 20.0).toFloat() else 1f
+        player.volume = base * fade
+    }
+
+    // ---------- таймер сна ----------
+
+    /** Когда остановить (elapsedRealtime), 0 — таймер выключен. */
+    var sleepAt = 0L
+        private set
+    var sleepAtEnd = false
+        private set
+    private val sleepListeners = ArrayList<() -> Unit>()
+
+    fun listenSleep(l: () -> Unit) { sleepListeners += l }
+    fun unlistenSleep(l: () -> Unit) { sleepListeners -= l }
+    private fun listeners() = sleepListeners.toList().forEach { it() }
+
+    private val sleepRun = object : Runnable {
+        override fun run() {
+            val left = sleepAt - android.os.SystemClock.elapsedRealtime()
+            if (left > FADE_MS) {
+                main.postDelayed(this, left - FADE_MS)
+                return
+            }
+            // плавное затухание за 10 секунд, потом пауза
+            fade = (left.toFloat() / FADE_MS).coerceIn(0f, 1f)
+            applyVolume()
+            if (left > 0) main.postDelayed(this, 250) else {
+                player.pause()
+                sleepAt = 0
+                fade = 1f
+                applyVolume()
+                listeners()
+            }
+        }
+    }
+
+    /** minutes > 0 — через N минут; 0 — выключить; -1 — в конце текущего видео. */
+    fun setSleep(minutes: Int) {
+        main.removeCallbacks(sleepRun)
+        fade = 1f
+        applyVolume()
+        sleepAt = 0
+        sleepAtEnd = minutes < 0
+        if (minutes > 0) {
+            sleepAt = android.os.SystemClock.elapsedRealtime() + minutes * 60_000L
+            main.post(sleepRun)
+        }
+        listeners()
+    }
+
     private fun newCpn(): String = (1..16).map { CPN[Random.nextInt(CPN.length)] }.joinToString("")
 
     companion object {
         const val HINT_VIDEO = "video"
+        const val EXTRA_MUSIC = "music"
+        private const val FADE_MS = 10_000L
+
+        /** Сервис работает в том же процессе — экраны обращаются к нему напрямую (только из главного потока). */
+        var instance: PlaybackService? = null
+            private set
 
         /** Режим «только звук»: видео не грузится даже при открытом экране плеера. */
         @Volatile

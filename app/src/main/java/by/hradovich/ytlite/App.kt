@@ -85,6 +85,43 @@ object Prefs {
         get() = p.getString("channel", if (BuildConfig.VERSION_NAME.contains("-")) "beta" else "stable") ?: "stable"
         set(v) = p.edit().putString("channel", v).apply()
 
+    // ---------- плеер и звук ----------
+
+    /** Скорость видео, запоминается между роликами (музыка — всегда обычная). */
+    var speed: Float
+        get() = p.getFloat("speed", 1f)
+        set(v) = p.edit().putFloat("speed", v).apply()
+
+    /** После видео — следующее из рекомендаций (если очередь пуста). */
+    var autoplay: Boolean
+        get() = p.getBoolean("autoplay", true)
+        set(v) = p.edit().putBoolean("autoplay", v).apply()
+
+    /** После трека — «радио» по похожим (если очередь пуста). */
+    var musicRadio: Boolean
+        get() = p.getBoolean("musicRadio", true)
+        set(v) = p.edit().putBoolean("musicRadio", v).apply()
+
+    /** Выравнивание громкости между видео. */
+    var normalize: Boolean
+        get() = p.getBoolean("normalize", true)
+        set(v) = p.edit().putBoolean("normalize", v).apply()
+
+    /** Усиление громкости, дБ (0 — выключено). */
+    var boostDb: Int
+        get() = p.getInt("boostDb", 0)
+        set(v) = p.edit().putInt("boostDb", v).apply()
+
+    /** Ночной режим: сжатие динамического диапазона. */
+    var nightMode: Boolean
+        get() = p.getBoolean("nightMode", false)
+        set(v) = p.edit().putBoolean("nightMode", v).apply()
+
+    /** Картинка в картинке при выходе на рабочий стол. */
+    var pip: Boolean
+        get() = p.getBoolean("pip", false)
+        set(v) = p.edit().putBoolean("pip", v).apply()
+
     var lastVersion: String?
         get() = p.getString("lastVersion", null)
         set(v) = p.edit().putString("lastVersion", v).apply()
