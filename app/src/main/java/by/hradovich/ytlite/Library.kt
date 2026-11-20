@@ -13,6 +13,7 @@ import android.widget.Toast
 import androidx.recyclerview.widget.ConcatAdapter
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import coil.load
 
 /** «Смотреть позже» и плейлисты аккаунта. */
 object Library {
@@ -95,26 +96,62 @@ object Library {
     }
 }
 
-/** Библиотека: «Смотреть позже», «Понравившиеся» и плейлисты аккаунта. */
+/** Библиотека: «Смотреть позже», «Понравившиеся» и плейлисты аккаунта — компактным списком. */
 class LibraryPage(private val act: MainActivity, parent: ViewGroup) : AppPage {
     override val view: View = LayoutInflater.from(act).inflate(R.layout.page_channel, parent, false)
     private val list: RecyclerView = view.findViewById(R.id.list)
-    private val adapter = VideoAdapter {}
+    private val progress: ProgressBar = view.findViewById(R.id.progress)
+
+    /** Строка списка: иконка (для встроенных) или превью плейлиста. */
+    private class Entry(val id: String, val title: String, val sub: String, val thumb: String?, val icon: Int = 0)
+
+    private val items = ArrayList<Entry>()
+
+    private val adapter = object : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+        override fun getItemCount() = items.size
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) =
+            object : RecyclerView.ViewHolder(LayoutInflater.from(parent.context).inflate(R.layout.item_music_row, parent, false)) {}
+
+        override fun onBindViewHolder(h: RecyclerView.ViewHolder, position: Int) {
+            val e = items[position]
+            val v = h.itemView
+            v.findViewById<TextView>(R.id.mrTitle).text = e.title
+            v.findViewById<TextView>(R.id.mrSub).apply {
+                text = e.sub
+                visibility = if (e.sub.isEmpty()) View.GONE else View.VISIBLE
+            }
+            val img = v.findViewById<android.widget.ImageView>(R.id.mrThumb)
+            if (e.icon != 0) {
+                img.setImageResource(e.icon)
+                img.scaleType = android.widget.ImageView.ScaleType.CENTER
+            } else {
+                img.scaleType = android.widget.ImageView.ScaleType.CENTER_CROP
+                img.load(e.thumb) { crossfade(false) }
+            }
+            v.setOnClickListener { act.openPlaylist(e.id) }
+        }
+    }
 
     init {
         view.findViewById<View>(R.id.back).setOnClickListener { act.closePage(this) }
         view.findViewById<TextView>(R.id.topTitle).setText(R.string.library)
-        view.findViewById<ProgressBar>(R.id.progress).visibility = View.GONE
         list.layoutManager = LinearLayoutManager(act)
         list.adapter = adapter
-        val fixed = listOf(
-            Video(Library.WATCH_LATER, act.getString(R.string.watch_later), "", "", "", null, null, isPlaylist = true),
-            Video(Library.LIKED, act.getString(R.string.liked_videos), "", "", "", null, null, isPlaylist = true),
-        )
-        adapter.submit(fixed)
+        items += Entry(Library.WATCH_LATER, act.getString(R.string.watch_later), "", null, R.drawable.ic_timer)
+        items += Entry(Library.LIKED, act.getString(R.string.liked_videos), "", null, R.drawable.ic_like)
+        adapter.notifyItemRangeInserted(0, items.size)
         Net.io.execute {
             val r = runCatching { InnerTube.playlists() }.onFailure { ErrorLog.log("Плейлисты", it) }
-            act.runOnUiThread { r.onSuccess { adapter.submit(fixed + it) } }
+            act.runOnUiThread {
+                progress.visibility = View.GONE
+                r.onSuccess { pls ->
+                    val start = items.size
+                    pls.forEach { p ->
+                        items += Entry(p.id, p.title, listOf(p.channel, p.duration).filter { it.isNotBlank() }.joinToString(" · "), p.thumb)
+                    }
+                    adapter.notifyItemRangeInserted(start, items.size - start)
+                }
+            }
         }
     }
 }
