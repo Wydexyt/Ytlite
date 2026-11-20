@@ -139,6 +139,14 @@ class LibraryTab(private val act: MainActivity, parent: ViewGroup) {
     init {
         // чипы «Главная/Библиотека» из макета музыки здесь не нужны
         (root.findViewById<View>(R.id.mHome).parent as View).visibility = View.GONE
+        root.findViewById<androidx.swiperefreshlayout.widget.SwipeRefreshLayout>(R.id.mRefresh).apply {
+            setColorSchemeColors(0xFFFF0033.toInt())
+            setProgressBackgroundColorSchemeColor(0xFF272727.toInt())
+            setOnRefreshListener {
+                isRefreshing = false
+                reset()
+            }
+        }
         list.layoutManager = LinearLayoutManager(act)
         list.adapter = adapter
     }

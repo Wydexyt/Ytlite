@@ -20,6 +20,7 @@ import androidx.media3.session.MediaController
 import androidx.recyclerview.widget.ConcatAdapter
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
+import coil.dispose
 import coil.load
 import coil.transform.CircleCropTransformation
 
@@ -92,7 +93,9 @@ object MusicNav {
         Likes.seen(id, now)
         if (now) Toast.makeText(act, R.string.music_liked_toast, Toast.LENGTH_SHORT).show()
         Net.io.execute {
-            runCatching { Music.rate(id, if (now) "LIKE" else "INDIFFERENT") }.onFailure {
+            runCatching { Music.rate(id, if (now) "LIKE" else "INDIFFERENT") }.onSuccess {
+                act.runOnUiThread { (act as? MainActivity)?.onMusicLibraryChanged() }
+            }.onFailure {
                 ErrorLog.log("Лайк $id", it)
                 Likes.seen(id, liked)
                 act.runOnUiThread { Toast.makeText(act, R.string.try_again, Toast.LENGTH_SHORT).show() }
@@ -155,6 +158,25 @@ class MusicSectionsAdapter(private val act: MainActivity) : RecyclerView.Adapter
         onBindViewHolder(h, position)
     }
 
+    /** Обложка; у встроенных плейлистов — тёмная плитка с белой иконкой. */
+    private fun bindCover(img: ImageView, item: MusicItem, iconPadDp: Int) {
+        val icon = Music.systemIcon(item.id)
+        if (icon != 0) {
+            img.dispose()
+            img.setImageResource(icon)
+            img.scaleType = ImageView.ScaleType.FIT_CENTER
+            val p = (iconPadDp * act.resources.displayMetrics.density).toInt()
+            img.setPadding(p, p, p, p)
+            return
+        }
+        img.setPadding(0, 0, 0, 0)
+        img.scaleType = ImageView.ScaleType.CENTER_CROP
+        img.load(item.thumb) {
+            crossfade(false)
+            if (item.type == MusicItem.Type.ARTIST) transformations(CircleCropTransformation())
+        }
+    }
+
     private fun bindLike(v: View, item: MusicItem) {
         val btn = v.findViewById<ImageButton>(R.id.mrLike)
         if (item.type != MusicItem.Type.SONG) {
@@ -210,10 +232,7 @@ class MusicSectionsAdapter(private val act: MainActivity) : RecyclerView.Adapter
     private fun bindRow(v: View, item: MusicItem, section: List<MusicItem>) {
         v.findViewById<TextView>(R.id.mrTitle).text = item.title
         v.findViewById<TextView>(R.id.mrSub).text = item.subtitle
-        v.findViewById<ImageView>(R.id.mrThumb).load(item.thumb) {
-            crossfade(false)
-            if (item.type == MusicItem.Type.ARTIST) transformations(CircleCropTransformation())
-        }
+        bindCover(v.findViewById(R.id.mrThumb), item, 10)
         v.setOnClickListener { MusicNav.open(act, item, section) }
         v.setOnLongClickListener { MusicNav.menu(it, item); true }
         bindLike(v, item)
@@ -229,10 +248,7 @@ class MusicSectionsAdapter(private val act: MainActivity) : RecyclerView.Adapter
             val v = h.itemView
             v.findViewById<TextView>(R.id.mcTitle).text = item.title
             v.findViewById<TextView>(R.id.mcSub).text = item.subtitle
-            v.findViewById<ImageView>(R.id.mcThumb).load(item.thumb) {
-                crossfade(false)
-                if (item.type == MusicItem.Type.ARTIST) transformations(CircleCropTransformation())
-            }
+            bindCover(v.findViewById(R.id.mcThumb), item, 44)
             v.setOnClickListener { MusicNav.open(act, item) }
             v.setOnLongClickListener { MusicNav.menu(it, item); true }
         }
@@ -291,11 +307,25 @@ class MusicTab(private val act: MainActivity, parent: ViewGroup) {
     var loaded = false
         private set
 
+    private val refresh: androidx.swiperefreshlayout.widget.SwipeRefreshLayout = root.findViewById(R.id.mRefresh)
+
     init {
         list.layoutManager = LinearLayoutManager(act)
         list.adapter = adapter
         chips.forEachIndexed { i, c -> c.setOnClickListener { select(i) } }
         mark()
+        refresh.setColorSchemeColors(0xFFFF0033.toInt())
+        refresh.setProgressBackgroundColorSchemeColor(0xFF272727.toInt())
+        refresh.setOnRefreshListener {
+            cache[selected] = null
+            show(selected, pull = true)
+        }
+    }
+
+    /** Что-то сохранили или лайкнули — библиотеку перезагрузить при следующем показе (или сразу, если открыта). */
+    fun libraryChanged() {
+        cache[1] = null
+        if (loaded && selected == 1) show(1, pull = true)
     }
 
     private fun mark() = chips.forEachIndexed { k, c ->
@@ -323,8 +353,9 @@ class MusicTab(private val act: MainActivity, parent: ViewGroup) {
         show(i)
     }
 
-    private fun show(i: Int) {
+    private fun show(i: Int, pull: Boolean = false) {
         message.visibility = View.GONE
+        if (!pull) refresh.isRefreshing = false
         cache[i]?.let {
             progress.visibility = View.GONE
             adapter.submit(it)
@@ -337,8 +368,10 @@ class MusicTab(private val act: MainActivity, parent: ViewGroup) {
             message.visibility = View.VISIBLE
             return
         }
-        adapter.submit(emptyList())
-        progress.visibility = View.VISIBLE
+        if (!pull) {
+            adapter.submit(emptyList())
+            progress.visibility = View.VISIBLE
+        }
         val g = ++gen
         Net.io.execute {
             val r = runCatching {
@@ -348,6 +381,7 @@ class MusicTab(private val act: MainActivity, parent: ViewGroup) {
             act.runOnUiThread {
                 if (g != gen) return@runOnUiThread
                 progress.visibility = View.GONE
+                refresh.isRefreshing = false
                 r.onSuccess {
                     cache[i] = it
                     adapter.submit(it)
@@ -501,7 +535,9 @@ class MusicPageView(
                     saved = now
                     render()
                     Net.io.execute {
-                        runCatching { Music.savePlaylist(pl, now) }.onFailure {
+                        runCatching { Music.savePlaylist(pl, now) }.onSuccess {
+                            act.runOnUiThread { act.onMusicLibraryChanged() }
+                        }.onFailure {
                             ErrorLog.log("Сохранить $pl", it)
                             act.runOnUiThread {
                                 saved = !now
@@ -792,7 +828,7 @@ class MusicScreen(private val act: MainActivity, val root: View) {
         updateLike()
         if (status == "LIKE") Toast.makeText(act, R.string.music_liked_toast, Toast.LENGTH_SHORT).show()
         Net.io.execute {
-            val ok = runCatching { Music.rate(id, status) }.onFailure { ErrorLog.log("Оценка $id", it) }.isSuccess
+            val ok = runCatching { Music.rate(id, status) }.onSuccess { act.runOnUiThread { act.onMusicLibraryChanged() } }.onFailure { ErrorLog.log("Оценка $id", it) }.isSuccess
             if (!ok) act.runOnUiThread {
                 if (infoFor == id) {
                     likeStatus = old

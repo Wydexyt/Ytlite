@@ -129,8 +129,9 @@ object InnerTube {
     }
 
     /** Страница видео: описание, канал, комментарии и рекомендации. */
-    fun next(videoId: String): Details {
-        val j = post("next", JSONObject().put("videoId", videoId))
+    fun next(videoId: String, params: String? = null): Details {
+        // params из уведомления об ответе: тогда YouTube ставит нужную ветку комментариев первой
+        val j = post("next", JSONObject().put("videoId", videoId).apply { if (params != null) put("params", params) })
         val p = find(j, "videoPrimaryInfoRenderer")
         val s = find(j, "videoSecondaryInfoRenderer")
         val owner = s?.optJSONObject("owner")?.optJSONObject("videoOwnerRenderer")
@@ -478,6 +479,8 @@ object InnerTube {
         val videoId: String?,
         val channelId: String?,
         val read: Boolean,
+        val params: String? = null,   // для ответа на комментарий — открыть видео на этой ветке
+        val isComment: Boolean = false,
     )
 
     fun notifications(): List<Notification> {
@@ -488,14 +491,26 @@ object InnerTube {
                 is JSONObject -> {
                     n.optJSONObject("notificationRenderer")?.let { r ->
                         val nav = r.optJSONObject("navigationEndpoint")
+                        val navText = nav?.toString().orEmpty()
+                        // ссылка бывает разной: watchEndpoint, команда открытия комментариев или просто url «/watch?v=…&lc=…»
+                        val url = nav?.let { findWhere(it) { o -> o.optString("url").contains("v=") } }?.optString("url").orEmpty()
+                        val vid = nav?.let { find(it, "watchEndpoint") }?.optString("videoId")?.ifEmpty { null }
+                            ?: nav?.let { findWhere(it) { o -> o.optString("videoId").length == 11 } }?.optString("videoId")
+                            ?: Regex("[?&]v=([\\w-]{11})").find(url)?.groupValues?.get(1)
+                        val params = nav?.let { find(it, "watchEndpoint") }?.optString("params")?.ifEmpty { null }
+                        val isComment = url.contains("lc=") || navText.contains("omment")
+                        val ch = nav?.let { find(it, "browseEndpoint") }?.optString("browseId")?.takeIf { it.startsWith("UC") }
+                        if (vid == null && ch == null) ErrorLog.log("Уведомление: ссылка не распознана", IllegalStateException(navText.take(1500)))
                         out += Notification(
                             text = r.optJSONObject("shortMessage").text(),
                             time = r.optJSONObject("sentTimeText").text(),
                             avatar = pickThumb(r.optJSONObject("thumbnail")?.optJSONArray("thumbnails"), 88),
                             thumb = pickThumb(r.optJSONObject("videoThumbnail")?.optJSONArray("thumbnails"), 240),
-                            videoId = nav?.let { find(it, "watchEndpoint") }?.optString("videoId")?.ifEmpty { null },
-                            channelId = nav?.let { find(it, "browseEndpoint") }?.optString("browseId")?.takeIf { it.startsWith("UC") },
+                            videoId = vid,
+                            channelId = ch,
                             read = r.optBoolean("read", true),
+                            params = params,
+                            isComment = isComment,
                         )
                         return
                     }

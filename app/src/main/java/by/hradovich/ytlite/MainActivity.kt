@@ -360,6 +360,13 @@ class MainActivity : Activity() {
         expandPlayer()
     }
 
+    /** Видео сразу с комментариями (уведомление об ответе). */
+    fun openVideoComments(id: String, params: String?) {
+        if (music.visible) music.hide()
+        player.openComments(id, params)
+        expandPlayer()
+    }
+
     /** Видео показывается только в развёрнутом плеере при открытом окне; иначе — только звук. */
     private fun updateVideoTrack() {
         val c = controller ?: return
@@ -446,6 +453,8 @@ class MainActivity : Activity() {
     }
 
     fun onMusicHidden() = updateMini()
+
+    fun onMusicLibraryChanged() = musicTab.libraryChanged()
 
     fun openHistory() = openPage(HistoryPage(this, pagesBox))
 
@@ -722,7 +731,7 @@ class MainActivity : Activity() {
                 d.dismiss()
                 Prefs.channel = values[i]
                 if (values[i] == "beta") Updates.check(this, force = true)
-                else if (Updates.isBeta) Updates.rollback(this) // стоит бета — предложить вернуться на стабильную
+                else if (Updates.isBeta) Updates.switchToStable(this) // стоит бета — обновиться до новой стабильной или откатиться
             }
             .show()
     }

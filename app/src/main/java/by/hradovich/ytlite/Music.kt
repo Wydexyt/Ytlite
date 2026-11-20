@@ -393,9 +393,21 @@ object Music {
     /** Обложка нужного размера: у YouTube Music размер задаётся в ссылке (=wN-hN), лишнего не качаем. */
     fun thumb(n: JSONObject?, target: Int = 226): String? = pick(n, target)?.let { sized(it, target) }
 
-    fun sized(url: String, px: Int): String =
-        if (url.contains("googleusercontent.com") || url.contains("ggpht.com")) url.replace(Regex("=w\\d+-h\\d+[^/]*$"), "=w$px-h$px-l90-rj")
-        else url
+    fun sized(url: String, px: Int): String {
+        if (!url.contains("googleusercontent.com") && !url.contains("ggpht.com")) return url
+        // обложки: «=w120-h120-l90-rj», фото исполнителей и каналов: «=s120-c-k-…»
+        val wh = Regex("=w\\d+-h\\d+[^/]*$")
+        if (wh.containsMatchIn(url)) return url.replace(wh, "=w$px-h$px-l90-rj")
+        val sq = Regex("=s\\d+([^/]*)$")
+        return if (sq.containsMatchIn(url)) url.replace(sq) { "=s$px" + it.groupValues[1] } else url
+    }
+
+    /** Встроенные плейлисты YouTube Music: вместо цветных обложек — своя монохромная иконка. */
+    fun systemIcon(id: String): Int = when (id.removePrefix("VL")) {
+        "LM" -> R.drawable.ic_like
+        "SE" -> R.drawable.ic_podcast
+        else -> 0
+    }
 
     private fun pick(n: JSONObject?, target: Int): String? {
         val a = n?.let { findArray(it, "thumbnails") } ?: return null

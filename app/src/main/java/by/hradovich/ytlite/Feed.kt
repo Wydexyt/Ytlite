@@ -45,9 +45,56 @@ class Feed(
     /** Вызывается один раз после первой загрузки (успешной или нет). */
     var onFirstLoad: (() -> Unit)? = null
 
+    /** Подвал ленты: крутилка догрузки или «Повторить» после ошибки. */
+    private val footer = object : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+        var state = 0 // 0 — ничего, 1 — грузится, 2 — ошибка
+            set(v) {
+                if (field == v) return
+                val had = field != 0
+                field = v
+                when {
+                    had && v == 0 -> notifyItemRemoved(0)
+                    !had && v != 0 -> notifyItemInserted(0)
+                    else -> notifyItemChanged(0)
+                }
+            }
+
+        override fun getItemCount() = if (state == 0) 0 else 1
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
+            val d = parent.resources.displayMetrics.density
+            val box = android.widget.FrameLayout(parent.context).apply {
+                layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, (72 * d).toInt())
+                addView(ProgressBar(parent.context), android.widget.FrameLayout.LayoutParams(
+                    (32 * d).toInt(), (32 * d).toInt(), android.view.Gravity.CENTER))
+                addView(TextView(parent.context).apply {
+                    setText(R.string.load_more_retry)
+                    setTextColor(act.getColor(R.color.text))
+                    setBackgroundResource(R.drawable.chip)
+                    gravity = android.view.Gravity.CENTER
+                    setPadding((16 * d).toInt(), 0, (16 * d).toInt(), 0)
+                }, android.widget.FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, (36 * d).toInt(), android.view.Gravity.CENTER))
+            }
+            return object : RecyclerView.ViewHolder(box) {}
+        }
+
+        override fun onBindViewHolder(h: RecyclerView.ViewHolder, position: Int) {
+            val box = h.itemView as ViewGroup
+            box.getChildAt(0).visibility = if (state == 1) View.VISIBLE else View.GONE
+            box.getChildAt(1).apply {
+                visibility = if (state == 2) View.VISIBLE else View.GONE
+                setOnClickListener { loadMore() }
+            }
+        }
+    }
+
+    /** Подряд пустые порции (всё отфильтровано) — догружаем дальше сами, но не бесконечно. */
+    private var emptyStreak = 0
+
     init {
         list.layoutManager = lm
-        list.adapter = adapter
+        list.adapter = androidx.recyclerview.widget.ConcatAdapter(adapter, footer)
         list.addOnScrollListener(object : RecyclerView.OnScrollListener() {
             override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
                 if (dy > 0 && lm.findLastVisibleItemPosition() >= adapter.itemCount - 5) loadMore()
@@ -64,6 +111,7 @@ class Feed(
 
     fun reset() {
         generation++
+        footer.state = 0
         adapter.submit(emptyList())
         continuation = null
         loading = false
@@ -83,6 +131,8 @@ class Feed(
     fun load(pull: Boolean = false) {
         val g = ++generation
         continuation = null
+        footer.state = 0
+        emptyStreak = 0
         message.visibility = View.GONE
         if (needsLogin && !Auth.loggedIn) {
             progress.visibility = View.GONE
@@ -119,6 +169,7 @@ class Feed(
         if (loading) return
         val token = continuation ?: return
         loading = true
+        footer.state = 1
         val g = generation
         Net.io.execute {
             val r = runCatching { InnerTube.more(endpoint, token) }
@@ -126,11 +177,20 @@ class Feed(
                 if (g != generation) return@runOnUiThread
                 loading = false
                 r.onSuccess {
+                    val before = adapter.itemCount
                     adapter.append(it.items)
+                    val added = adapter.itemCount - before
                     continuation = it.continuation
+                    footer.state = if (continuation != null) 1 else 0
+                    // порция ушла в фильтры (шортсы, трансляции, повторы) или её мало, чтобы прокрутить, — сразу следующую
+                    emptyStreak = if (added < 4) emptyStreak + 1 else 0
+                    if (continuation != null && emptyStreak > 8) footer.state = 2 // много пустых подряд — дальше по кнопке
+                    else if (continuation != null && emptyStreak > 0) list.post { loadMore() }
+                    else if (continuation != null && lm.findLastVisibleItemPosition() >= adapter.itemCount - 2) list.post { loadMore() }
                 }.onFailure {
+                    // токен не теряем: «Повторить» или следующая прокрутка продолжат с того же места
                     ErrorLog.log("Лента: $name (догрузка)", it)
-                    continuation = null
+                    footer.state = 2
                 }
             }
         }

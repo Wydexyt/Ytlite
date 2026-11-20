@@ -101,13 +101,116 @@ object Updates {
                     .setMessage(r.optString("body").substringBefore("\n---").trim().take(1500).ifEmpty { act.getString(R.string.update_new) } +
                         "\n\n" + act.getString(R.string.update_installed, BuildConfig.VERSION_NAME))
                     .setPositiveButton(R.string.download) { _, _ ->
-                        act.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                        install(act, url)
                     }
                     .setNeutralButton(R.string.skip) { _, _ -> p.edit().putString("skippedTag", tag).apply() }
                     .setNegativeButton(R.string.later, null)
                     .show()
             }
         }
+    }
+
+    /**
+     * Переход с беты на «Стабильные»: если уже вышла стабильная новее установленной беты —
+     * обычное обновление до неё, иначе — откат к прошлой стабильной.
+     */
+    fun switchToStable(act: Activity) {
+        Net.io.execute {
+            val newer = runCatching {
+                val tag = JSONObject(get("$REPO/latest")).optString("tag_name")
+                val latest = parse(tag) ?: return@runCatching false
+                val cur = parse(BuildConfig.VERSION_NAME) ?: return@runCatching false
+                compare(latest, cur) > 0
+            }.getOrDefault(false)
+            act.runOnUiThread {
+                if (act.isFinishing) return@runOnUiThread
+                if (newer) check(act, force = true) else rollback(act)
+            }
+        }
+    }
+
+    // ---------- скачивание и установка без браузера ----------
+
+    /** Скачать APK с прогрессом и сразу открыть установщик пакетов. */
+    fun install(act: Activity, url: String) {
+        val d = act.resources.displayMetrics.density
+        val bar = android.widget.ProgressBar(act, null, android.R.attr.progressBarStyleHorizontal).apply {
+            max = 100
+            isIndeterminate = true
+        }
+        val label = android.widget.TextView(act).apply { setPadding(0, (8 * d).toInt(), 0, 0) }
+        val box = android.widget.LinearLayout(act).apply {
+            orientation = android.widget.LinearLayout.VERTICAL
+            val p = (24 * d).toInt()
+            setPadding(p, (12 * d).toInt(), p, 0)
+            addView(bar)
+            addView(label)
+        }
+        val cancelled = java.util.concurrent.atomic.AtomicBoolean(false)
+        val dialog = AlertDialog.Builder(act)
+            .setTitle(R.string.update_downloading)
+            .setView(box)
+            .setCancelable(false)
+            .setNegativeButton(R.string.cancel) { _, _ -> cancelled.set(true) }
+            .show()
+        Net.io.execute {
+            val file = runCatching {
+                val dir = java.io.File(act.cacheDir, "updates").apply { mkdirs(); listFiles()?.forEach { it.delete() } }
+                val f = java.io.File(dir, "YTLite.apk")
+                Net.http.newCall(Request.Builder().url(url).header("User-Agent", "YTLite").build()).execute().use { r ->
+                    if (!r.isSuccessful) throw IllegalStateException("HTTP ${r.code}")
+                    val body = r.body ?: throw IllegalStateException("empty")
+                    val total = body.contentLength()
+                    var done = 0L
+                    var shown = -1
+                    body.byteStream().use { input ->
+                        f.outputStream().use { out ->
+                            val buf = ByteArray(64 * 1024)
+                            while (true) {
+                                if (cancelled.get()) throw java.util.concurrent.CancellationException()
+                                val n = input.read(buf)
+                                if (n < 0) break
+                                out.write(buf, 0, n)
+                                done += n
+                                val pct = if (total > 0) (done * 100 / total).toInt() else -1
+                                if (pct != shown) {
+                                    shown = pct
+                                    act.runOnUiThread {
+                                        bar.isIndeterminate = pct < 0
+                                        if (pct >= 0) bar.progress = pct
+                                        label.text = "%.1f / %s MB".format(done / 1048576.0, if (total > 0) "%.1f".format(total / 1048576.0) else "?")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                f
+            }
+            act.runOnUiThread {
+                runCatching { dialog.dismiss() }
+                if (act.isFinishing) return@runOnUiThread
+                file.onSuccess { launchInstaller(act, it) }.onFailure { e ->
+                    if (e is java.util.concurrent.CancellationException) return@onFailure
+                    ErrorLog.log("Скачивание обновления", e)
+                    // запасной путь — как раньше, через браузер
+                    android.widget.Toast.makeText(act, R.string.update_download_failed, android.widget.Toast.LENGTH_LONG).show()
+                    act.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                }
+            }
+        }
+    }
+
+    private fun launchInstaller(act: Activity, f: java.io.File) {
+        val uri = androidx.core.content.FileProvider.getUriForFile(act, "${act.packageName}.files", f)
+        val i = Intent(Intent.ACTION_VIEW)
+            .setDataAndType(uri, "application/vnd.android.package-archive")
+            .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK)
+        // Android один раз спросит разрешение «Установка из этого источника»
+        if (android.os.Build.VERSION.SDK_INT >= 26 && !act.packageManager.canRequestPackageInstalls()) {
+            android.widget.Toast.makeText(act, R.string.update_allow_install, android.widget.Toast.LENGTH_LONG).show()
+        }
+        runCatching { act.startActivity(i) }.onFailure { ErrorLog.log("Установщик", it) }
     }
 
     /** С беты — обратно на стабильную: файл отката из релиза установленной беты (или последней беты). */
@@ -130,7 +233,7 @@ object Updates {
                     .setMessage(act.getString(R.string.rollback_message, name))
                     .setPositiveButton(R.string.download) { _, _ ->
                         Prefs.channel = "stable"
-                        act.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                        install(act, url)
                     }
                     .setNegativeButton(android.R.string.cancel, null)
                     .show()

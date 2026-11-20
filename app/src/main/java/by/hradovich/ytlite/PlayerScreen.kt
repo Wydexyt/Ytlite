@@ -206,6 +206,20 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
     }
 
     /** Открыть видео (из ленты, ссылки, рекомендаций). */
+    /** Из уведомления об ответе: параметры ветки и сразу открыть комментарии. */
+    private var detailsParams: Pair<String, String?>? = null
+    private var commentsOnLoad: String? = null
+
+    fun openComments(id: String, params: String?) {
+        detailsParams = id to params
+        commentsOnLoad = id
+        if (detailsFor == id) {
+            // это видео уже открыто — перезагрузить страницу с нужной веткой
+            detailsFor = null
+        }
+        open(id, null)
+    }
+
     fun open(id: String, title: String?, start: Long = 0) {
         Streams.prefetch(id)
         pending = id to start
@@ -524,7 +538,8 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
         related.submit(emptyList())
         relatedContinuation = null
         Net.io.execute {
-            val r = runCatching { InnerTube.next(id) }.onFailure { ErrorLog.log("Страница видео $id", it) }.getOrNull()
+            val params = detailsParams?.takeIf { it.first == id }?.second
+            val r = runCatching { InnerTube.next(id, params) }.onFailure { ErrorLog.log("Страница видео $id", it) }.getOrNull()
             act.runOnUiThread {
                 if (detailsFor != id || r == null) return@runOnUiThread
                 current = r
@@ -534,6 +549,11 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
                 related.submit(r.related.items)
                 relatedContinuation = r.related.continuation
                 commentsToken = r.commentsToken
+                if (commentsOnLoad == id) {
+                    commentsOnLoad = null
+                    detailsParams = null
+                    if (r.commentsToken != null) openComments()
+                }
             }
         }
     }
