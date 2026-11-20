@@ -73,7 +73,7 @@ jobs:
           cp app/build/outputs/apk/release/app-release.apk "YTLite-${VERSION}.apk"
 
       - name: Rollback APK (beta)
-        if: github.ref != 'refs/heads/main'
+        if: github.ref == 'refs/heads/beta'
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: |
