@@ -90,6 +90,17 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             mediaItem?.mediaId?.let { loadDetails(it) }
         }
+
+        /** Видео 18+, полученное через аккаунт, YouTube не отдал (403) — открываем веб-плеер. */
+        override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
+            val id = detailsFor ?: return
+            if (id in Streams.viaAccount && expanded && web == null &&
+                error.errorCode == androidx.media3.common.PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
+            ) {
+                controller?.stop()
+                showWeb(id)
+            }
+        }
     }
 
     /** Настройка экрана; вызывается из init в конце класса — после инициализации всех полей. */

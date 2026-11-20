@@ -49,6 +49,14 @@ object Streams {
         future(id)
     }
 
+    /** Видео, полученные от имени аккаунта (18+): при 403 их открываем в веб-плеере. */
+    val viaAccount: MutableSet<String> = java.util.Collections.newSetFromMap(ConcurrentHashMap<String, Boolean>())
+
+    /** Забыть ссылки видео — следующий запрос получит свежие (возможно, с другого сервера). */
+    fun invalidate(id: String) {
+        cache.remove(id)
+    }
+
     fun get(id: String): Resolved = try {
         future(id).get()
     } catch (e: ExecutionException) {
@@ -87,7 +95,7 @@ object Streams {
             if (!Auth.loggedIn) throw AgeGateException(Lang.str(R.string.err_age_login))
             ErrorLog.log("18+ $id: пробую через аккаунт", e)
             return try {
-                AccountStreams.resolve(id)
+                AccountStreams.resolve(id).also { viaAccount += id }
             } catch (e2: Exception) {
                 throw AgeGateException(e2.message ?: Lang.str(R.string.err_unavailable))
             }
@@ -288,15 +296,10 @@ object AccountStreams {
                 .appendQueryParameter(sp, YoutubeJavaScriptPlayerManager.deobfuscateSignature(id, s))
                 .build().toString()
         }
-        // Параметр n: NewPipe может не уметь его расшифровать под новый плеер YouTube —
-        // тогда пробуем ссылку как есть (скорость может быть ограничена)
-        return runCatching { YoutubeJavaScriptPlayerManager.getUrlWithThrottlingParameterDeobfuscated(id, url) }
-            .onFailure { if (!nWarned) { nWarned = true; ErrorLog.log("18+ $id: n не расшифрован, ссылка как есть", it) } }
-            .getOrDefault(url)
+        // Параметр n обязателен: без расшифровки YouTube отвечает 403, поэтому ошибка здесь
+        // означает «наш плеер не может» → видео уйдёт в веб-плеер
+        return YoutubeJavaScriptPlayerManager.getUrlWithThrottlingParameterDeobfuscated(id, url)
     }
-
-    @Volatile
-    private var nWarned = false
 
     /** Расшифрованная ссылка и описание потока для построения DASH-манифеста. */
     private fun format(id: String, o: JSONObject, dur: Long): Pair<String, ItagItem>? {

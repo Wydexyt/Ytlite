@@ -71,6 +71,10 @@ object Prefs {
         get() = p.getInt("qualityMobile", 480)
         set(v) = p.edit().putInt("qualityMobile", v).apply()
 
+    fun listen(l: SharedPreferences.OnSharedPreferenceChangeListener) = p.registerOnSharedPreferenceChangeListener(l)
+
+    fun unlisten(l: SharedPreferences.OnSharedPreferenceChangeListener) = p.unregisterOnSharedPreferenceChangeListener(l)
+
     /** Язык интерфейса: system / ru / en. */
     var language: String
         get() = p.getString("language", "system") ?: "system"

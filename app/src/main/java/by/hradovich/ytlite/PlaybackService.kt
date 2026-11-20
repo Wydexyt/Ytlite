@@ -95,6 +95,8 @@ class PlaybackService : MediaSessionService() {
             .build()
         setVideo(false) // видео включается, только когда открыт экран плеера
         player.addListener(watchTracker)
+        getSystemService(ConnectivityManager::class.java).registerDefaultNetworkCallback(networkCallback)
+        Prefs.listen(prefsListener)
 
         val open = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java).putExtra(MainActivity.EXTRA_EXPAND, true),
@@ -113,6 +115,8 @@ class PlaybackService : MediaSessionService() {
     }
 
     override fun onDestroy() {
+        runCatching { getSystemService(ConnectivityManager::class.java).unregisterNetworkCallback(networkCallback) }
+        Prefs.unlisten(prefsListener)
         closeSeg()
         saveResume()
         reportWatchTime()
@@ -187,6 +191,60 @@ class PlaybackService : MediaSessionService() {
         val b = player.trackSelectionParameters.buildUpon().clearOverridesOfType(C.TRACK_TYPE_VIDEO)
         if (r?.portrait == true) b.setMaxVideoSize(q, Int.MAX_VALUE) else b.setMaxVideoSize(Int.MAX_VALUE, q)
         player.trackSelectionParameters = b.build()
+    }
+
+    // ---------- повтор при сетевой ошибке ----------
+
+    private val retried = HashSet<String>()
+
+    /**
+     * Сервер видео не отвечает или ссылка протухла: один раз запрашиваем ссылки заново
+     * (YouTube часто даёт другой узел) и продолжаем с того же места.
+     */
+    private fun retryWithFreshLinks(id: String, error: androidx.media3.common.PlaybackException) {
+        val code = error.errorCode
+        val network = code == androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
+            code == androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
+            code == androidx.media3.common.PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
+        if (!network || id in Streams.viaAccount || !retried.add(id)) return
+        val item = player.currentMediaItem ?: return
+        val pos = player.currentPosition
+        Streams.invalidate(id)
+        Net.io.execute {
+            val r = runCatching { Streams.get(id) }.onFailure { ErrorLog.log("Повтор $id", it) }.getOrNull() ?: return@execute
+            main.post {
+                if (player.currentMediaItem?.mediaId != id) return@post
+                resolved[id] = r
+                applyQuality(r)
+                player.setMediaItem(item, pos)
+                player.prepare()
+                player.play()
+            }
+        }
+    }
+
+    // ---------- качество: сразу при смене сети или настройки ----------
+
+    private var lastWifi: Boolean? = null
+
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onCapabilitiesChanged(network: android.net.Network, caps: NetworkCapabilities) {
+            val wifi = caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || caps.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+            if (wifi != lastWifi) {
+                val changed = lastWifi != null
+                lastWifi = wifi
+                if (changed) main.post { reapplyQuality() }
+            }
+        }
+    }
+
+    private val prefsListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == "quality" || key == "qualityMobile") main.post { reapplyQuality() }
+    }
+
+    private fun reapplyQuality() {
+        val id = player.currentMediaItem?.mediaId ?: return
+        applyQuality(resolved[id])
     }
 
     private fun onWifi(): Boolean {
@@ -361,11 +419,16 @@ class PlaybackService : MediaSessionService() {
         }
 
         override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
-            ErrorLog.log("Воспроизведение ${player.currentMediaItem?.mediaId} (${error.errorCodeName})", error)
+            val id = player.currentMediaItem?.mediaId
+            ErrorLog.log("Воспроизведение $id (${error.errorCodeName})", error)
+            if (id != null) retryWithFreshLinks(id, error)
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
-            if (isPlaying) startSeg() else closeSeg()
+            if (isPlaying) {
+                startSeg()
+                player.currentMediaItem?.mediaId?.let { retried.remove(it) } // заиграло — повтор снова доступен
+            } else closeSeg()
             if (!isPlaying && player.playbackState != Player.STATE_BUFFERING) saveResume()
             if (!Auth.loggedIn) return
             val id = player.currentMediaItem?.mediaId ?: return
