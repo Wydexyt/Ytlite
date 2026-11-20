@@ -22,7 +22,13 @@ class MusicItem(
     fun toQueue(cover: String? = null) = QItem(id, title, subtitle.substringBefore(" • "), thumb ?: cover, music = true)
 }
 
-class MusicSection(val title: String, val items: List<MusicItem>, val list: Boolean)
+class MusicSection(
+    val title: String,
+    val items: List<MusicItem>,
+    val list: Boolean,
+    val moreId: String? = null,        // «Все» у полки: полный список (у исполнителя — все его треки)
+    val continuation: String? = null,  // продолжение длинного списка
+)
 
 class MusicPage(
     val title: String,
@@ -32,6 +38,8 @@ class MusicPage(
     val tracks: List<QItem>,
     val channelId: String? = null, // исполнитель: на кого подписываться
     val subscribed: Boolean = false,
+    val allTracksId: String? = null, // исполнитель: плейлист со всеми треками
+    val continuation: String? = null, // длинный плейлист: продолжение списка треков
 )
 
 /** Запросы к YouTube Music (клиент WEB_REMIX) от имени активного аккаунта. */
@@ -52,7 +60,7 @@ object Music {
         ?: (runCatching { YoutubeParsingHelper.getYoutubeMusicClientVersion() }.getOrNull() ?: FALLBACK_VERSION)
             .also { version = it }
 
-    fun post(endpoint: String, body: JSONObject): JSONObject {
+    fun post(endpoint: String, body: JSONObject, query: String = ""): JSONObject {
         val ver = clientVersion()
         body.put(
             "context", JSONObject().put(
@@ -64,7 +72,7 @@ object Music {
             )
         )
         val rb = Request.Builder()
-            .url("$BASE$endpoint?prettyPrint=false")
+            .url("$BASE$endpoint?prettyPrint=false$query")
             .post(body.toString().toRequestBody("application/json".toMediaType()))
             .header("User-Agent", Net.UA)
             .header("X-Youtube-Client-Name", "67")
@@ -134,10 +142,56 @@ object Music {
         // у треков альбома нет своих обложек и исполнителя — берём из шапки
         val tracks = secs.filter { it.list }.flatMap { it.items }.filter { it.type == MusicItem.Type.SONG }
             .map { QItem(it.id, it.title, it.subtitle.substringBefore(" • ").ifEmpty { strap.orEmpty() }, it.thumb ?: cover, music = true) }
+        val songs = secs.firstOrNull { it.list && it.items.any { i -> i.type == MusicItem.Type.SONG } }
         return MusicPage(
             title, sub, cover, secs, tracks,
             channelId = sub0?.optString("channelId")?.ifEmpty { null }, subscribed = sub0?.optBoolean("subscribed") == true,
+            allTracksId = songs?.moreId?.takeIf { it != browseId },
+            continuation = songs?.continuation,
         )
+    }
+
+    /** Продолжение длинного списка: новые треки и следующий токен. */
+    fun more(token: String): Pair<List<MusicItem>, String?> {
+        // старый формат продолжений — в параметрах ссылки, новый — в теле запроса
+        val j = if (token.startsWith("ctoken:")) {
+            val t = java.net.URLEncoder.encode(token.removePrefix("ctoken:"), "UTF-8")
+            post("browse", JSONObject(), "&ctoken=$t&continuation=$t&type=next")
+        } else post("browse", JSONObject().put("continuation", token))
+        val items = ArrayList<MusicItem>()
+        walk(j) { o -> o.optJSONObject("musicResponsiveListItemRenderer")?.let { responsive(it) }?.let { items += it } }
+        return items to nextToken(j)
+    }
+
+    /** Все треки списка (с догрузкой), не больше limit. */
+    fun allTracks(browseId: String, limit: Int = 1000): List<QItem> {
+        val p = page(browseId)
+        val out = ArrayList(p.tracks)
+        var token = p.continuation
+        var guard = 0
+        while (token != null && out.size < limit && guard++ < 30) {
+            val (items, next) = more(token)
+            if (items.isEmpty()) break
+            out += items.filter { it.type == MusicItem.Type.SONG }.map { it.toQueue(p.cover) }
+            token = next
+        }
+        return out.distinctBy { it.id }
+    }
+
+    private fun nextToken(n: JSONObject): String? {
+        find(n, "continuationCommand")?.optString("token")?.ifEmpty { null }?.let { return it }
+        find(n, "nextContinuationData")?.optString("continuation")?.ifEmpty { null }?.let { return "ctoken:$it" }
+        return null
+    }
+
+    /** Лайк через YouTube Music — так трек попадает в «Понравившуюся музыку». */
+    fun rate(videoId: String, status: String) {
+        val ep = when (status) {
+            "LIKE" -> "like/like"
+            "DISLIKE" -> "like/dislike"
+            else -> "like/removelike"
+        }
+        post(ep, JSONObject().put("target", JSONObject().put("videoId", videoId)))
     }
 
     /** Оценка трека (LIKE / DISLIKE / INDIFFERENT) и ссылка на текст песни. */
@@ -218,7 +272,12 @@ object Music {
         val list = kind == "musicShelfRenderer" || kind == "musicPlaylistShelfRenderer" ||
             (kind == "musicCarouselShelfRenderer" && items.all { it.type == MusicItem.Type.SONG } &&
                 arr.optJSONObject(0)?.has("musicResponsiveListItemRenderer") == true)
-        return MusicSection(title, items, list)
+        // «Все»: ссылка в заголовке полки или кнопка под ней
+        val more = (r.optJSONObject("title") ?: header)?.let { find(it, "browseEndpoint") }?.optString("browseId")?.ifEmpty { null }
+            ?: r.optJSONObject("bottomEndpoint")?.let { find(it, "browseEndpoint") ?: it.optJSONObject("browseEndpoint") }
+                ?.optString("browseId")?.ifEmpty { null }
+        val cont = if (list) nextToken(JSONObject().put("c", r.optJSONArray("continuations") ?: JSONArray()).put("a", arr.optJSONObject(arr.length() - 1) ?: JSONObject())) else null
+        return MusicSection(title, items, list, more, cont)
     }
 
     private fun twoRow(r: JSONObject): MusicItem? {

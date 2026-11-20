@@ -332,7 +332,10 @@ class MusicPageView(
     private var page: MusicPage? = null
 
     init {
-        view.findViewById<View>(R.id.back).setOnClickListener { act.closePage(this) }
+        view.findViewById<View>(R.id.back).setOnClickListener {
+            closed = true
+            act.closePage(this)
+        }
         view.findViewById<TextView>(R.id.topTitle).text = query.orEmpty()
         list.layoutManager = LinearLayoutManager(act)
         list.adapter = ConcatAdapter(header, sections)
@@ -348,14 +351,10 @@ class MusicPageView(
                         view.findViewById<TextView>(R.id.topTitle).text = it.title
                         header.notifyItemInserted(0)
                     }
-                    // в альбоме у треков нет своих обложек — подставляем обложку альбома
-                    sections.submit(if (it.cover == null) it.sections else it.sections.map { s ->
-                        MusicSection(s.title, s.items.map { m ->
-                            if (m.thumb == null && m.type == MusicItem.Type.SONG)
-                                MusicItem(m.type, m.id, m.title, m.subtitle.ifEmpty { it.subtitle.substringBefore(" · ") }, it.cover, m.playlistId)
-                            else m
-                        }, s.list)
-                    })
+                    shown = it.sections.map { s -> MusicSection(s.title, s.items.map { m -> withCover(m) }, s.list, s.moreId) }
+                    tracks = it.tracks
+                    sections.submit(shown)
+                    it.continuation?.let { t -> loadRest(t) }
                     if (it.sections.isEmpty()) {
                         message.setText(R.string.music_empty)
                         message.visibility = View.VISIBLE
@@ -365,6 +364,60 @@ class MusicPageView(
                     message.visibility = View.VISIBLE
                 }
             }
+        }
+    }
+
+    private var shown: List<MusicSection> = emptyList()
+    private var tracks: List<QItem> = emptyList()
+    private var closed = false
+
+    override fun onBack(): Boolean {
+        closed = true
+        return false
+    }
+
+    /** В альбоме у треков нет своих обложек — подставляем обложку альбома. */
+    private fun withCover(m: MusicItem): MusicItem {
+        val p = page ?: return m
+        return if (m.thumb == null && m.type == MusicItem.Type.SONG && p.cover != null)
+            MusicItem(m.type, m.id, m.title, m.subtitle.ifEmpty { p.subtitle.substringBefore(" · ") }, p.cover, m.playlistId)
+        else m
+    }
+
+    /** Длинный плейлист («Понравившаяся музыка» и т. п.): догружаем остальное в фоне, порциями. */
+    private fun loadRest(first: String) {
+        Net.io.execute {
+            var token: String? = first
+            var guard = 0
+            while (token != null && guard++ < 30 && !closed) {
+                val r = runCatching { Music.more(token!!) }.onFailure { ErrorLog.log("Музыка: продолжение", it) }.getOrNull() ?: break
+                val (items, next) = r
+                if (items.isEmpty()) break
+                token = next
+                act.runOnUiThread {
+                    val i = shown.indexOfFirst { it.list && it.items.any { m -> m.type == MusicItem.Type.SONG } }
+                    if (i < 0) return@runOnUiThread
+                    val s = shown[i]
+                    val add = items.map { withCover(it) }.filter { a -> s.items.none { it.id == a.id } }
+                    shown = shown.toMutableList().also { it[i] = MusicSection(s.title, s.items + add, true, s.moreId) }
+                    tracks = tracks + add.filter { it.type == MusicItem.Type.SONG }.map { it.toQueue(page?.cover) }
+                    sections.submit(shown)
+                }
+            }
+        }
+    }
+
+    /** «Воспроизвести всё»: у исполнителя — полный список его треков, иначе — загруженное. */
+    private fun playAll(shuffle: Boolean) {
+        val all = page?.allTracksId
+        if (all == null) {
+            MusicNav.playTracks(act, tracks, 0, shuffle)
+            return
+        }
+        Toast.makeText(act, R.string.loading, Toast.LENGTH_SHORT).show()
+        Net.io.execute {
+            val list = runCatching { Music.allTracks(all) }.onFailure { ErrorLog.log("Все треки $all", it) }.getOrNull()
+            act.runOnUiThread { MusicNav.playTracks(act, list?.takeIf { it.isNotEmpty() } ?: tracks, 0, shuffle) }
         }
     }
 
@@ -385,9 +438,9 @@ class MusicPageView(
             val sub = v.findViewById<TextView>(R.id.mhSubscribe)
             val ch = p.channelId
             if (ch != null && type == MusicItem.Type.ARTIST) sub.bindSubscribe(ch, p.subscribed) else sub.visibility = View.GONE
-            v.findViewById<View>(R.id.mhButtons).visibility = if (p.tracks.isEmpty()) View.GONE else View.VISIBLE
-            v.findViewById<View>(R.id.mhPlay).setOnClickListener { MusicNav.playTracks(act, p.tracks, 0) }
-            v.findViewById<View>(R.id.mhShuffle).setOnClickListener { MusicNav.playTracks(act, p.tracks, 0, shuffle = true) }
+            v.findViewById<View>(R.id.mhButtons).visibility = if (p.tracks.isEmpty() && p.allTracksId == null) View.GONE else View.VISIBLE
+            v.findViewById<View>(R.id.mhPlay).setOnClickListener { playAll(false) }
+            v.findViewById<View>(R.id.mhShuffle).setOnClickListener { playAll(true) }
         }
     }
 }
@@ -643,7 +696,7 @@ class MusicScreen(private val act: MainActivity, val root: View) {
         updateLike()
         if (status == "LIKE") Toast.makeText(act, R.string.music_liked_toast, Toast.LENGTH_SHORT).show()
         Net.io.execute {
-            val ok = runCatching { InnerTube.rate(id, status) }.onFailure { ErrorLog.log("Оценка $id", it) }.isSuccess
+            val ok = runCatching { Music.rate(id, status) }.onFailure { ErrorLog.log("Оценка $id", it) }.isSuccess
             if (!ok) act.runOnUiThread {
                 if (infoFor == id) {
                     likeStatus = old
