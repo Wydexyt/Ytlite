@@ -79,7 +79,7 @@ object MusicNav {
             return
         }
         svc.play(q)
-        act.showMusicPlayer()
+        act.showMusicPlayer(q)
     }
 
     /** Долгий тап по треку: в очередь. */
@@ -436,8 +436,25 @@ class MusicScreen(private val act: MainActivity, val root: View) {
         ui.removeCallbacks(tick)
     }
 
-    fun show() {
-        if (visible) return
+    /** Трек, который ещё загружается: пока показываем его название и обложку. */
+    private var waiting: QItem? = null
+    private var waitingAt = 0L
+
+    fun show(q: QItem? = null) {
+        if (q != null) {
+            waiting = q
+            waitingAt = android.os.SystemClock.elapsedRealtime()
+            title.text = q.title
+            artist.text = q.channel
+            if (cover.tag != q.thumb) {
+                cover.tag = q.thumb
+                cover.load(q.thumb?.let { big(it) }) { crossfade(true) }
+            }
+        }
+        if (visible) {
+            update()
+            return
+        }
         root.visibility = View.VISIBLE
         root.translationY = root.height.takeIf { it > 0 }?.toFloat() ?: act.resources.displayMetrics.heightPixels.toFloat()
         root.animate().translationY(0f).setDuration(260).setInterpolator(DecelerateInterpolator(2f)).setListener(null)
@@ -447,6 +464,7 @@ class MusicScreen(private val act: MainActivity, val root: View) {
 
     fun hide() {
         if (!visible) return
+        waiting = null
         root.animate().translationY(root.height.toFloat()).setDuration(220).withEndAction {
             root.visibility = View.GONE
             act.onMusicHidden()
@@ -460,6 +478,12 @@ class MusicScreen(private val act: MainActivity, val root: View) {
         val c = controller ?: return
         if (!visible) return
         val item = c.currentMediaItem
+        val w = waiting
+        if (w != null) {
+            // ещё грузится (не дольше 20 с — вдруг не открылся и играет следующий)
+            if (item?.mediaId != w.id && android.os.SystemClock.elapsedRealtime() - waitingAt < 20_000) return
+            waiting = null
+        }
         if (item == null || !PlaybackService.isMusic(item)) {
             hide()
             return

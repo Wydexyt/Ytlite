@@ -426,10 +426,10 @@ class MainActivity : Activity() {
         openPage(MusicPageView(this, pagesBox, browseId, type))
     }
 
-    fun showMusicPlayer() {
+    fun showMusicPlayer(q: QItem? = null) {
         if (player.expanded) collapsePlayer()
         hideKeyboard()
-        music.show()
+        music.show(q)
         updateMini()
     }
 
