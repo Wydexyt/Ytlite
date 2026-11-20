@@ -83,9 +83,9 @@ fun TextView.bindSubscribe(channelId: String?, subscribed: Boolean) {
 }
 
 class VideoAdapter(
-    private val onClick: (Video) -> Unit,
     /** Пункт «Убрать из плейлиста» (на странице своего плейлиста). */
     private val onRemove: ((Video) -> Unit)? = null,
+    private val onClick: (Video) -> Unit,
 ) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
     /** Можно ли убирать видео (только в своих плейлистах). */
     var removable = true

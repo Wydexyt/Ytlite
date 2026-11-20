@@ -99,7 +99,7 @@ object Library {
 class LibraryPage(private val act: MainActivity, parent: ViewGroup) : AppPage {
     override val view: View = LayoutInflater.from(act).inflate(R.layout.page_channel, parent, false)
     private val list: RecyclerView = view.findViewById(R.id.list)
-    private val adapter = VideoAdapter({})
+    private val adapter = VideoAdapter {}
 
     init {
         view.findViewById<View>(R.id.back).setOnClickListener { act.closePage(this) }

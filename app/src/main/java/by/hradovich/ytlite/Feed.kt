@@ -29,7 +29,7 @@ class Feed(
     private val loader: () -> Page,
 ) {
     val root: View = LayoutInflater.from(act).inflate(R.layout.page_feed, parent, false)
-    private val adapter = VideoAdapter(onOpen)
+    private val adapter = VideoAdapter(onClick = onOpen)
     private val list: RecyclerView = root.findViewById(R.id.list)
     private val refresh: SwipeRefreshLayout = root.findViewById(R.id.refresh)
     private val progress: ProgressBar = root.findViewById(R.id.progress)
