@@ -121,6 +121,16 @@
     <string name="web_player">YouTube web player · age-restricted video</string>
     <string name="zoom_fill">Fill screen</string>
     <string name="zoom_fit">Original size</string>
+    <string name="app_name_beta" translatable="false">YT Lite β</string>
+    <string name="channel">Update channel</string>
+    <string name="channel_menu">Updates: %1$s</string>
+    <string name="channel_stable">stable</string>
+    <string name="channel_beta">test</string>
+    <string name="channel_stable_long">Stable — fully tested versions</string>
+    <string name="channel_beta_long">Test (beta) — new features earlier, may be unstable</string>
+    <string name="rollback_title">Back to stable version</string>
+    <string name="rollback_message">Install stable version %1$s over this beta. Your sign-in and settings will be kept.</string>
+    <string name="rollback_unavailable">Rollback file not found. Try again later.</string>
     <plurals name="replies">
         <item quantity="one">%1$s reply</item>
         <item quantity="other">%1$s replies</item>

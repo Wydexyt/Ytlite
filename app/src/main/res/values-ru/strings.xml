@@ -116,6 +116,15 @@
     <string name="web_player">Веб-плеер YouTube · видео 18+</string>
     <string name="zoom_fill">Заполнить экран</string>
     <string name="zoom_fit">Исходный размер</string>
+    <string name="channel">Канал обновлений</string>
+    <string name="channel_menu">Обновления: %1$s</string>
+    <string name="channel_stable">стабильные</string>
+    <string name="channel_beta">тестовые</string>
+    <string name="channel_stable_long">Стабильные — проверенные версии</string>
+    <string name="channel_beta_long">Тестовые (бета) — новое раньше, но может работать нестабильно</string>
+    <string name="rollback_title">Вернуться на стабильную версию</string>
+    <string name="rollback_message">Установить стабильную версию %1$s поверх беты. Вход в аккаунт и настройки сохранятся.</string>
+    <string name="rollback_unavailable">Файл отката не найден. Попробуйте позже.</string>
     <plurals name="replies">
         <item quantity="one">%1$s ответ</item>
         <item quantity="few">%1$s ответа</item>

@@ -80,6 +80,11 @@ object Prefs {
         get() = p.getString("language", "system") ?: "system"
         set(v) = p.edit().putString("language", v).commit().let { }
 
+    /** Канал обновлений: stable / beta. */
+    var channel: String
+        get() = p.getString("channel", if (BuildConfig.VERSION_NAME.contains("-")) "beta" else "stable") ?: "stable"
+        set(v) = p.edit().putString("channel", v).apply()
+
     var lastVersion: String?
         get() = p.getString("lastVersion", null)
         set(v) = p.edit().putString("lastVersion", v).apply()

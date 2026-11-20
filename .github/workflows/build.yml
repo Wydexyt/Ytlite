@@ -2,7 +2,8 @@ name: Build APK
 
 on:
   push:
-    branches: [main, dev]
+    # main — стабильные версии, beta — тестовые (предрелизы), dev — только проверка сборки
+    branches: [main, beta, dev]
     # изменения только в документации не собирают новую версию
     paths-ignore:
       - "**.md"
@@ -42,44 +43,83 @@ jobs:
       - name: Version
         run: |
           base=$(grep '^version=' version.properties | cut -d= -f2 | tr -d ' \r')
-          if git rev-parse -q --verify "refs/tags/v${base}" >/dev/null; then
-            # Версия уже выпущена — это хотфикс: base.N
-            n=$(git tag -l "v${base}.*" | sed "s/^v${base}\.//" | grep -E '^[0-9]+$' | sort -n | tail -1)
-            VERSION="${base}.$(( ${n:-0} + 1 ))"
-          else
-            VERSION="${base}"
-          fi
-          [ "${GITHUB_REF}" = "refs/heads/main" ] || VERSION="${VERSION}-dev${{ github.run_number }}"
+          # Внутренний номер для Android: чётный — обычная сборка, нечётный (+1) — файл отката к стабильной
+          CODE=$(( ${{ github.run_number }} * 2 + 100 ))
+          case "${GITHUB_REF}" in
+            refs/heads/main)
+              if git rev-parse -q --verify "refs/tags/v${base}" >/dev/null; then
+                # Версия уже выпущена — это хотфикс: base.N
+                n=$(git tag -l "v${base}.*" | sed "s/^v${base}\.//" | grep -E '^[0-9]+$' | sort -n | tail -1)
+                VERSION="${base}.$(( ${n:-0} + 1 ))"
+              else
+                VERSION="${base}"
+              fi ;;
+            refs/heads/beta)
+              n=$(git tag -l "v${base}-beta.*" | sed "s/^v${base}-beta\.//" | grep -E '^[0-9]+$' | sort -n | tail -1)
+              VERSION="${base}-beta.$(( ${n:-0} + 1 ))" ;;
+            *)
+              VERSION="${base}-dev${{ github.run_number }}" ;;
+          esac
           echo "VERSION=${VERSION}" >> "$GITHUB_ENV"
-          echo "Версия: ${VERSION}"
+          echo "CODE=${CODE}" >> "$GITHUB_ENV"
+          echo "Версия: ${VERSION} (${CODE})"
 
       - name: Build release APK
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          BUILD_NUMBER: ${{ github.run_number }}
-          VERSION: ${{ env.VERSION }}
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon --stacktrace
+          BUILD_NUMBER="${CODE}" ./gradlew assembleRelease --no-daemon --stacktrace
           cp app/build/outputs/apk/release/app-release.apk "YTLite-${VERSION}.apk"
+
+      - name: Rollback APK (beta)
+        if: github.ref == 'refs/heads/beta'
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          # Последняя стабильная версия, пересобранная с номером выше беты: ставится поверх беты без удаления
+          STABLE=$(git tag -l 'v*' | grep -E '^v[0-9]+\.[0-9]+(\.[0-9]+)*$' | sort -V | tail -1)
+          echo "Откат к ${STABLE}"
+          git worktree add /tmp/stable "${STABLE}"
+          cp app/release.jks /tmp/stable/app/release.jks
+          (cd /tmp/stable && chmod +x gradlew && VERSION="${STABLE#v}" BUILD_NUMBER=$(( CODE + 1 )) ./gradlew assembleRelease --no-daemon)
+          cp /tmp/stable/app/build/outputs/apk/release/app-release.apk "YTLite-${STABLE#v}-rollback.apk"
 
       - uses: actions/upload-artifact@v4
         with:
           name: app-release
           path: YTLite-*.apk
 
-      - name: Publish release
-        if: github.ref == 'refs/heads/main'
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Release notes
+        if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/beta'
         run: |
-          # Описание релиза — раздел CHANGELOG.md "## <версия>"; иначе — сообщение коммита
+          # Раздел CHANGELOG.md "## <версия> "; иначе — сообщения коммитов с прошлого тега
           awk -v ver="## ${VERSION} " '
             /^## / { if (found) exit; if (index($0, ver) == 1) { found=1; next } }
             found { print }
           ' CHANGELOG.md > notes.md || true
-          [ -s notes.md ] || git log -1 --pretty=%s > notes.md
+          if [ ! -s notes.md ]; then
+            prev=$(git describe --tags --abbrev=0 2>/dev/null || true)
+            git log --pretty='- %s' ${prev:+$prev..}HEAD | head -30 > notes.md
+          fi
+
+      - name: Publish stable release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
           printf '\n---\nУстановка: скачайте APK ниже и установите поверх предыдущей версии.\n' >> notes.md
           gh release create "v${VERSION}" "YTLite-${VERSION}.apk" \
             --title "YT Lite ${VERSION}" \
+            --notes-file notes.md
+
+      - name: Publish beta (pre-release)
+        if: github.ref == 'refs/heads/beta'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          printf '\n---\n**Тестовая версия.** Может работать нестабильно.\nОткат: файл *-rollback.apk — стабильная версия, ставится поверх беты без потери входа и настроек.\n' >> notes.md
+          gh release create "v${VERSION}" YTLite-*.apk \
+            --prerelease \
+            --title "YT Lite ${VERSION} (тест)" \
             --notes-file notes.md

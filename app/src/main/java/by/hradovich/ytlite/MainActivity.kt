@@ -131,6 +131,8 @@ class MainActivity : Activity() {
             }
         }
         accountIcon = findViewById(R.id.account)
+        // Тестовая версия видна сразу — пометка β в шапке
+        if (Updates.isBeta) findViewById<TextView>(R.id.appTitle).text = getString(R.string.app_name_beta)
         header = findViewById(R.id.header)
         searchBar = findViewById(R.id.searchBar)
         searchContainer = findViewById(R.id.searchContainer)
@@ -510,7 +512,9 @@ class MainActivity : Activity() {
         menu.menu.add(2, SPONSOR, 105, R.string.sponsorblock_menu)
         menu.menu.add(2, LANGUAGE, 106, getString(R.string.language_menu, languageName(Prefs.language)))
         menu.menu.add(3, LOG, 107, R.string.error_log)
-        menu.menu.add(3, UPDATE, 108, getString(R.string.check_updates, BuildConfig.VERSION_NAME))
+        menu.menu.add(3, CHANNEL, 108, getString(R.string.channel_menu, getString(if (Prefs.channel == "beta") R.string.channel_beta else R.string.channel_stable)))
+        if (Updates.isBeta) menu.menu.add(3, ROLLBACK, 109, R.string.rollback_title)
+        menu.menu.add(3, UPDATE, 110, getString(R.string.check_updates, BuildConfig.VERSION_NAME))
         menu.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 ADD -> startActivity(Intent(this, LoginActivity::class.java))
@@ -529,6 +533,8 @@ class MainActivity : Activity() {
                 SPONSOR -> showSponsorSettings()
                 LANGUAGE -> chooseLanguage()
                 UPDATE -> Updates.check(this, force = true)
+                CHANNEL -> chooseChannel()
+                ROLLBACK -> Updates.rollback(this)
                 LOG -> showErrorLog()
                 else -> accounts.getOrNull(item.itemId)?.let {
                     if (it.id != active) {
@@ -541,6 +547,22 @@ class MainActivity : Activity() {
             true
         }
         menu.show()
+    }
+
+    private fun chooseChannel() {
+        val values = arrayOf("stable", "beta")
+        AlertDialog.Builder(this)
+            .setTitle(R.string.channel)
+            .setSingleChoiceItems(
+                arrayOf(getString(R.string.channel_stable_long), getString(R.string.channel_beta_long)),
+                values.indexOf(Prefs.channel)
+            ) { d, i ->
+                d.dismiss()
+                Prefs.channel = values[i]
+                if (values[i] == "beta") Updates.check(this, force = true)
+                else if (Updates.isBeta) Updates.rollback(this) // стоит бета — предложить вернуться на стабильную
+            }
+            .show()
     }
 
     private fun languageName(l: String) = getString(
@@ -693,6 +715,8 @@ class MainActivity : Activity() {
         private const val LOG = Menu.FIRST + 1006
         private const val STATS = Menu.FIRST + 1007
         private const val LANGUAGE = Menu.FIRST + 1008
+        private const val CHANNEL = Menu.FIRST + 1009
+        private const val ROLLBACK = Menu.FIRST + 1010
     }
 }
 
