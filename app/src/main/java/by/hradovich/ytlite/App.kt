@@ -102,6 +102,11 @@ object Prefs {
         get() = p.getBoolean("musicRadio", true)
         set(v) = p.edit().putBoolean("musicRadio", v).apply()
 
+    /** Повтор музыки: 0 — нет, 1 — весь список, 2 — один трек. */
+    var musicRepeat: Int
+        get() = p.getInt("musicRepeat", 0)
+        set(v) = p.edit().putInt("musicRepeat", v).apply()
+
     /** Выравнивание громкости между видео. */
     var normalize: Boolean
         get() = p.getBoolean("normalize", true)

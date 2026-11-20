@@ -23,6 +23,22 @@ object Queue {
     /** Сыгранное в этой сессии — для «Назад» и чтобы автовоспроизведение не повторялось. */
     val history = ArrayList<QItem>()
 
+    /** Исходный список (альбом, плейлист) — для «повторять всё» и отмены перемешивания. */
+    var source: List<QItem> = emptyList()
+
+    var shuffled = false
+        private set
+
+    fun setShuffle(on: Boolean) {
+        shuffled = on
+        if (on) items.shuffle()
+        else {
+            val order = source.withIndex().associate { it.value.id to it.index }
+            items.sortBy { order[it.id] ?: Int.MAX_VALUE }
+        }
+        changed()
+    }
+
     private val listeners = ArrayList<() -> Unit>()
 
     fun listen(l: () -> Unit) { listeners += l }

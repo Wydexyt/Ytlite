@@ -92,6 +92,8 @@ class MainActivity : Activity() {
     // плеер
     private lateinit var panel: View
     private lateinit var player: PlayerScreen
+    private lateinit var music: MusicScreen
+    private lateinit var musicTab: MusicTab
     private var started = false
 
     // мини-плеер
@@ -148,6 +150,8 @@ class MainActivity : Activity() {
         pager = findViewById(R.id.pager)
         panel = findViewById(R.id.playerPanel)
         player = PlayerScreen(this, panel)
+        music = MusicScreen(this, findViewById(R.id.musicPlayer))
+        musicTab = MusicTab(this, pager)
 
         // Вкладки: каждая — отдельная лента, живут все три (кэш и позиция сохраняются)
         feeds = tabs.map { t ->
@@ -155,12 +159,14 @@ class MainActivity : Activity() {
                 InnerTube.browse(t.browseId)
             }
         }
-        pager.offscreenPageLimit = feeds.size
+        // Последняя вкладка — «Музыка»
+        val pageViews = feeds.map { it.root } + musicTab.root
+        pager.offscreenPageLimit = pageViews.size
         pager.adapter = object : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
-            override fun getItemCount() = feeds.size
+            override fun getItemCount() = pageViews.size
             override fun getItemViewType(position: Int) = position
             override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): RecyclerView.ViewHolder {
-                val v = feeds[viewType].root
+                val v = pageViews[viewType]
                 (v.parent as? ViewGroup)?.removeView(v)
                 v.layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
                 return object : RecyclerView.ViewHolder(v) {}
@@ -170,16 +176,21 @@ class MainActivity : Activity() {
         pager.registerOnPageChangeCallback(object : ViewPager2.OnPageChangeCallback() {
             override fun onPageSelected(position: Int) {
                 navItems.forEachIndexed { i, v -> v.alpha = if (i == position) 1f else 0.55f }
-                if (!feeds[position].loaded) feeds[position].load()
+                if (position == MUSIC_TAB) {
+                    if (!musicTab.loaded) musicTab.load()
+                } else if (!feeds[position].loaded) feeds[position].load()
+                query.setHint(if (position == MUSIC_TAB) R.string.music_search_hint else R.string.search_hint)
             }
         })
 
-        navItems = tabs.map { findViewById(it.navId) }
+        navItems = tabs.map { findViewById<View>(it.navId) } + findViewById<View>(R.id.navMusic)
         navItems.forEachIndexed { i, v ->
             v.setOnClickListener {
                 closeAllPages()
                 if (searchContainer.visibility == View.VISIBLE) exitSearch()
-                if (pager.currentItem == i) feeds[i].scrollTop() else pager.setCurrentItem(i, false)
+                if (pager.currentItem == i) {
+                    if (i == MUSIC_TAB) musicTab.scrollTop() else feeds[i].scrollTop()
+                } else pager.setCurrentItem(i, false)
             }
         }
 
@@ -214,7 +225,9 @@ class MainActivity : Activity() {
 
         accountIcon.setOnClickListener { showAccountMenu() }
 
-        mini.setOnClickListener { expandPlayer() }
+        mini.setOnClickListener {
+            if (PlaybackService.isMusic(controller?.currentMediaItem)) showMusicPlayer() else expandPlayer()
+        }
         miniPlay.setOnClickListener { controller?.let { if (it.isPlaying) it.pause() else it.play() } }
         findViewById<View>(R.id.miniClose).setOnClickListener {
             controller?.run { stop(); clearMediaItems() }
@@ -250,7 +263,8 @@ class MainActivity : Activity() {
             link != null -> openVideo(link.first, null, link.second)
             i.action == Intent.ACTION_VIEW || i.action == Intent.ACTION_SEND ->
                 Toast.makeText(this, R.string.link_unsupported, Toast.LENGTH_SHORT).show()
-            i.getBooleanExtra(EXTRA_EXPAND, false) -> expandPlayer()
+            i.getBooleanExtra(EXTRA_EXPAND, false) ->
+                if (PlaybackService.instance?.currentIsMusic == true) showMusicPlayer() else expandPlayer()
         }
         setIntent(Intent(this, MainActivity::class.java))
     }
@@ -265,6 +279,7 @@ class MainActivity : Activity() {
             controller = c
             c.addListener(playerListener)
             player.attach(c)
+            music.attach(c)
             updateVideoTrack()
             updateMini()
         }, ContextCompat.getMainExecutor(this))
@@ -280,6 +295,7 @@ class MainActivity : Activity() {
         ui.removeCallbacks(tick)
         controller?.removeListener(playerListener)
         player.detach()
+        music.detach()
         future?.let { MediaController.releaseFuture(it) }
         future = null
         controller = null
@@ -316,6 +332,7 @@ class MainActivity : Activity() {
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         when {
+            music.visible -> music.hide()
             player.expanded -> if (!player.onBack()) collapsePlayer()
             pages.isNotEmpty() -> if (!pages.last().onBack()) closePage(pages.last())
             searchContainer.visibility == View.VISIBLE ->
@@ -334,7 +351,7 @@ class MainActivity : Activity() {
     /** Видео показывается только в развёрнутом плеере при открытом окне; иначе — только звук. */
     private fun updateVideoTrack() {
         val c = controller ?: return
-        val video = started && player.expanded && !PlaybackService.audioOnly
+        val video = started && player.expanded && !PlaybackService.audioOnly && !PlaybackService.isMusic(c.currentMediaItem)
         if (c.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_VIDEO) == !video) return
         c.trackSelectionParameters = c.trackSelectionParameters.buildUpon()
             .setTrackTypeDisabled(C.TRACK_TYPE_VIDEO, !video)
@@ -401,6 +418,23 @@ class MainActivity : Activity() {
 
     fun openStats() = openPage(StatsPage(this, pagesBox))
 
+    // ---------- музыка ----------
+
+    fun openMusicPage(browseId: String, type: MusicItem.Type) {
+        if (player.expanded) collapsePlayer()
+        if (music.visible) music.hide()
+        openPage(MusicPageView(this, pagesBox, browseId, type))
+    }
+
+    fun showMusicPlayer() {
+        if (player.expanded) collapsePlayer()
+        hideKeyboard()
+        music.show()
+        updateMini()
+    }
+
+    fun onMusicHidden() = updateMini()
+
     fun openPlaylist(id: String) {
         if (player.expanded) collapsePlayer()
         openPage(PlaylistPage(this, pagesBox, id))
@@ -450,6 +484,12 @@ class MainActivity : Activity() {
         query.setText(text)
         query.setSelection(text.length)
         Prefs.addHistory(text)
+        // на вкладке «Музыка» ищем в YouTube Music
+        if (pager.currentItem == MUSIC_TAB) {
+            exitSearch()
+            openPage(MusicPageView(this, pagesBox, null, null, query = text))
+            return
+        }
         searchQuery = text
         hideSuggestions()
         searchFeed.load()
@@ -501,6 +541,7 @@ class MainActivity : Activity() {
         shownAccount = Auth.active?.id
         feeds.forEach { it.reset() }
         searchFeed.reset()
+        musicTab.reset()
         feeds.forEach { it.load() }
         if (searchQuery.isNotEmpty()) searchFeed.load()
     }
@@ -604,7 +645,7 @@ class MainActivity : Activity() {
         super.onUserLeaveHint()
         val c = controller ?: return
         if (!Prefs.pip || !player.expanded || !c.isPlaying || PlaybackService.audioOnly ||
-            PlaybackService.instance?.isMusic(c.currentMediaItem) == true
+            PlaybackService.isMusic(c.currentMediaItem)
         ) return
         val vs = c.videoSize
         val ratio = if (vs.width > 0 && vs.height > 0) {
@@ -758,7 +799,7 @@ class MainActivity : Activity() {
     private fun updateMini() {
         val c = controller
         val item = c?.currentMediaItem
-        if (c == null || item == null || c.playbackState == Player.STATE_IDLE || (player.expanded && panel.translationY == 0f)) {
+        if (c == null || item == null || c.playbackState == Player.STATE_IDLE || (player.expanded && panel.translationY == 0f) || music.visible) {
             if (!(player.expanded && panel.translationY > 0f)) mini.visibility = View.GONE
             ui.removeCallbacks(tick)
             return
@@ -769,7 +810,10 @@ class MainActivity : Activity() {
         miniChannel.text = md.artist ?: ""
         if (miniThumb.tag != item.mediaId) {
             miniThumb.tag = item.mediaId
-            miniThumb.load("https://i.ytimg.com/vi/${item.mediaId}/mqdefault.jpg") { crossfade(false) }
+            // у музыки — квадратная обложка
+            val art = if (PlaybackService.isMusic(item)) (md.artworkUri ?: item.mediaMetadata.artworkUri)?.toString() else null
+            miniThumb.load(art ?: "https://i.ytimg.com/vi/${item.mediaId}/mqdefault.jpg") { crossfade(false) }
+            miniThumb.scaleType = if (art != null) ImageView.ScaleType.FIT_CENTER else ImageView.ScaleType.CENTER_CROP
         }
         miniPlay.setImageResource(if (c.isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
         updateMiniProgress()
@@ -785,6 +829,7 @@ class MainActivity : Activity() {
 
     companion object {
         const val EXTRA_EXPAND = "expand"
+        private const val MUSIC_TAB = 3
         private const val ADD = Menu.FIRST + 1000
         private const val LOGOUT = Menu.FIRST + 1001
         private const val QUALITY_WIFI = Menu.FIRST + 1002

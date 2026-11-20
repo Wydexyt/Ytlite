@@ -223,6 +223,11 @@
             <ImageView style="@style/NavIcon" android:src="@drawable/ic_history" />
             <TextView style="@style/NavLabel" android:text="@string/tab_history" />
         </LinearLayout>
+
+        <LinearLayout android:id="@+id/navMusic" style="@style/NavItem">
+            <ImageView style="@style/NavIcon" android:src="@drawable/ic_music" />
+            <TextView style="@style/NavLabel" android:text="@string/tab_music" />
+        </LinearLayout>
     </LinearLayout>
 </LinearLayout>
 
@@ -230,6 +235,14 @@
     <include
         android:id="@+id/playerPanel"
         layout="@layout/player_panel"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:visibility="gone" />
+
+    <!-- Музыкальный плеер: обложка и управление, видео не грузится -->
+    <include
+        android:id="@+id/musicPlayer"
+        layout="@layout/music_player"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:visibility="gone" />

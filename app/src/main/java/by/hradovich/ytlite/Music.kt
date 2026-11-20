@@ -9,6 +9,23 @@ import org.schabi.newpipe.extractor.services.youtube.YoutubeParsingHelper
 import java.io.IOException
 import kotlin.math.abs
 
+class MusicItem(
+    val type: Type,
+    val id: String,          // videoId (трек), browseId (альбом, плейлист, исполнитель) или playlistId (микс)
+    val title: String,
+    val subtitle: String,
+    val thumb: String?,
+    val playlistId: String? = null,
+) {
+    enum class Type { SONG, ALBUM, PLAYLIST, ARTIST, MIX }
+
+    fun toQueue(cover: String? = null) = QItem(id, title, subtitle.substringBefore(" • "), thumb ?: cover, music = true)
+}
+
+class MusicSection(val title: String, val items: List<MusicItem>, val list: Boolean)
+
+class MusicPage(val title: String, val subtitle: String, val cover: String?, val sections: List<MusicSection>, val tracks: List<QItem>)
+
 /** Запросы к YouTube Music (клиент WEB_REMIX) от имени активного аккаунта. */
 object Music {
     private const val BASE = "https://music.youtube.com/youtubei/v1/"
@@ -67,6 +84,156 @@ object Music {
         val id = r.optString("videoId").ifEmpty { return null }
         val by = r.optJSONObject("shortBylineText").text().ifEmpty { r.optJSONObject("longBylineText").text().substringBefore(" • ") }
         return QItem(id, r.optJSONObject("title").text(), by, thumb(r.optJSONObject("thumbnail")), music = true)
+    }
+
+    // ---------- главная, поиск, библиотека, страницы ----------
+
+    fun home(): List<MusicSection> = sections(post("browse", JSONObject().put("browseId", "FEmusic_home")))
+
+    fun search(q: String): List<MusicSection> = sections(post("search", JSONObject().put("query", q)))
+
+    /** Библиотека: понравившиеся треки, плейлисты, альбомы, исполнители. */
+    fun library(): List<MusicSection> {
+        val out = ArrayList<MusicSection>()
+        fun part(browseId: String, title: String, filter: (MusicItem) -> Boolean = { true }) {
+            runCatching {
+                val items = sections(post("browse", JSONObject().put("browseId", browseId))).flatMap { it.items }.filter(filter)
+                if (items.isNotEmpty()) out += MusicSection(title, items, list = false)
+            }.onFailure { ErrorLog.log("Музыка: $browseId", it) }
+        }
+        part("FEmusic_liked_playlists", Lang.str(R.string.music_playlists)) { it.type != MusicItem.Type.SONG }
+        part("FEmusic_liked_albums", Lang.str(R.string.music_albums))
+        part("FEmusic_library_corpus_track_artists", Lang.str(R.string.music_artists))
+        return out
+    }
+
+    /** Альбом, плейлист или исполнитель. */
+    fun page(browseId: String): MusicPage {
+        val j = post("browse", JSONObject().put("browseId", browseId))
+        val h = HEADERS.firstNotNullOfOrNull { find(j, it) }
+        val title = h?.optJSONObject("title").text()
+        val strap = h?.optJSONObject("straplineTextOne").text()
+        val sub = listOf(strap, h?.optJSONObject("subtitle").text(), h?.optJSONObject("secondSubtitle").text())
+            .filter { !it.isNullOrBlank() }.joinToString(" · ")
+        val cover = thumb(h?.optJSONObject("thumbnail") ?: h?.optJSONObject("foregroundThumbnail"))
+        val secs = sections(j)
+        // у треков альбома нет своих обложек и исполнителя — берём из шапки
+        val tracks = secs.filter { it.list }.flatMap { it.items }.filter { it.type == MusicItem.Type.SONG }
+            .map { QItem(it.id, it.title, it.subtitle.substringBefore(" • ").ifEmpty { strap.orEmpty() }, it.thumb ?: cover, music = true) }
+        return MusicPage(title, sub, cover, secs, tracks)
+    }
+
+    /** Текст песни, если YouTube Music его отдаёт. */
+    fun lyrics(videoId: String): String? {
+        val next = post("next", JSONObject().put("videoId", videoId).put("isAudioOnly", true))
+        var id: String? = null
+        walk(next) { o ->
+            o.optJSONObject("browseEndpoint")?.optString("browseId")?.takeIf { it.startsWith("MPLYt") }?.let { if (id == null) id = it }
+        }
+        val b = post("browse", JSONObject().put("browseId", id ?: return null))
+        return find(b, "musicDescriptionShelfRenderer")?.let {
+            val text = it.optJSONObject("description").text()
+            val src = it.optJSONObject("footer").text()
+            if (text.isBlank()) null else if (src.isBlank()) text else "$text\n\n$src"
+        }
+    }
+
+    private val HEADERS = listOf(
+        "musicResponsiveHeaderRenderer", "musicDetailHeaderRenderer", "musicImmersiveHeaderRenderer",
+        "musicVisualHeaderRenderer", "musicEditablePlaylistDetailHeaderRenderer",
+    )
+
+    private val SHELVES = setOf(
+        "musicCarouselShelfRenderer", "musicImmersiveCarouselShelfRenderer", "musicShelfRenderer",
+        "musicPlaylistShelfRenderer", "gridRenderer", "musicCardShelfRenderer",
+    )
+
+    /** Полки страницы: карусели (карточки) и списки (треки). */
+    fun sections(root: JSONObject): List<MusicSection> {
+        val out = ArrayList<MusicSection>()
+        fun visit(n: Any?) {
+            when (n) {
+                is JSONObject -> {
+                    for (k in SHELVES) {
+                        val r = n.optJSONObject(k) ?: continue
+                        shelf(k, r)?.let { out += it }
+                        return
+                    }
+                    val keys = n.keys()
+                    while (keys.hasNext()) {
+                        val k = keys.next()
+                        if (k != "responseContext" && k != "frameworkUpdates" && k !in HEADERS) visit(n.opt(k))
+                    }
+                }
+                is JSONArray -> for (i in 0 until n.length()) visit(n.opt(i))
+            }
+        }
+        visit(root)
+        return out
+    }
+
+    private fun shelf(kind: String, r: JSONObject): MusicSection? {
+        if (kind == "musicCardShelfRenderer") {
+            // «Лучший результат» в поиске
+            val nav = r.optJSONObject("title")?.optJSONArray("runs")?.optJSONObject(0)?.optJSONObject("navigationEndpoint")
+                ?: r.optJSONObject("onTap") ?: return null
+            val item = fromNav(nav, r.optJSONObject("title").text(), r.optJSONObject("subtitle").text(), thumb(r.optJSONObject("thumbnail"))) ?: return null
+            return MusicSection(Lang.str(R.string.music_top_result), listOf(item), list = true)
+        }
+        val header = r.optJSONObject("header")
+        val title = (r.optJSONObject("title") ?: header?.let { find(it, "title") }).text()
+        val arr = r.optJSONArray("contents") ?: r.optJSONArray("items") ?: return null
+        val items = (0 until arr.length()).mapNotNull { i ->
+            val o = arr.optJSONObject(i) ?: return@mapNotNull null
+            o.optJSONObject("musicTwoRowItemRenderer")?.let { twoRow(it) }
+                ?: o.optJSONObject("musicResponsiveListItemRenderer")?.let { responsive(it) }
+        }
+        if (items.isEmpty()) return null
+        val list = kind == "musicShelfRenderer" || kind == "musicPlaylistShelfRenderer" ||
+            (kind == "musicCarouselShelfRenderer" && items.all { it.type == MusicItem.Type.SONG } &&
+                arr.optJSONObject(0)?.has("musicResponsiveListItemRenderer") == true)
+        return MusicSection(title, items, list)
+    }
+
+    private fun twoRow(r: JSONObject): MusicItem? {
+        val nav = r.optJSONObject("navigationEndpoint") ?: return null
+        return fromNav(nav, r.optJSONObject("title").text(), r.optJSONObject("subtitle").text(), thumb(r.optJSONObject("thumbnailRenderer")))
+    }
+
+    private fun responsive(r: JSONObject): MusicItem? {
+        val cols = r.optJSONArray("flexColumns") ?: JSONArray()
+        fun col(i: Int) = cols.optJSONObject(i)?.optJSONObject("musicResponsiveListItemFlexColumnRenderer")?.optJSONObject("text").text()
+        val title = col(0)
+        val sub = (1 until cols.length()).map { col(it) }.filter { it.isNotBlank() }.joinToString(" • ")
+        val th = thumb(r.optJSONObject("thumbnail"), 120)
+        val vid = r.optJSONObject("playlistItemData")?.optString("videoId")?.ifEmpty { null }
+            ?: find(r.optJSONObject("overlay"), "watchEndpoint")?.optString("videoId")?.ifEmpty { null }
+            ?: cols.optJSONObject(0)?.let { find(it, "watchEndpoint") }?.optString("videoId")?.ifEmpty { null }
+        if (vid != null) return MusicItem(MusicItem.Type.SONG, vid, title, sub, th)
+        val nav = r.optJSONObject("navigationEndpoint") ?: return null
+        return fromNav(nav, title, sub, th)
+    }
+
+    private fun fromNav(nav: JSONObject, title: String, sub: String, th: String?): MusicItem? {
+        nav.optJSONObject("watchEndpoint")?.let { w ->
+            val v = w.optString("videoId").ifEmpty { null }
+            val pl = w.optString("playlistId").ifEmpty { null }
+            return if (v != null) MusicItem(MusicItem.Type.SONG, v, title, sub, th, pl)
+            else pl?.let { MusicItem(MusicItem.Type.MIX, it, title, sub, th, it) }
+        }
+        nav.optJSONObject("watchPlaylistEndpoint")?.optString("playlistId")?.ifEmpty { null }?.let {
+            return MusicItem(MusicItem.Type.MIX, it, title, sub, th, it)
+        }
+        val b = nav.optJSONObject("browseEndpoint") ?: return null
+        val id = b.optString("browseId").ifEmpty { return null }
+        val pageType = find(b, "browseEndpointContextMusicConfig")?.optString("pageType").orEmpty()
+        val type = when {
+            pageType.endsWith("ARTIST") || pageType.endsWith("USER_CHANNEL") || id.startsWith("UC") -> MusicItem.Type.ARTIST
+            pageType.endsWith("ALBUM") || id.startsWith("MPRE") -> MusicItem.Type.ALBUM
+            pageType.endsWith("PLAYLIST") || id.startsWith("VL") -> MusicItem.Type.PLAYLIST
+            else -> return null // подкасты, настроения и прочее — пока не поддерживаем
+        }
+        return MusicItem(type, id, title, sub, th)
     }
 
     // ---------- разбор ----------

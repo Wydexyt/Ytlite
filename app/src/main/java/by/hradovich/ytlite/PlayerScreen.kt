@@ -88,6 +88,7 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
         }
 
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            if (PlaybackService.isMusic(mediaItem)) return // у музыки свой экран
             mediaItem?.mediaId?.let { loadDetails(it) }
         }
 
@@ -175,7 +176,7 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
         controller = c
         c.addListener(playerListener)
         if (expanded) bindView()
-        if (!openPending()) c.currentMediaItem?.mediaId?.let { loadDetails(it) }
+        if (!openPending() && !PlaybackService.isMusic(c.currentMediaItem)) c.currentMediaItem?.mediaId?.let { loadDetails(it) }
     }
 
     fun detach() {

@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:gravity="center_horizontal"
+    android:orientation="vertical"
+    android:paddingHorizontal="16dp"
+    android:paddingTop="8dp"
+    android:paddingBottom="8dp">
+
+    <ImageView
+        android:id="@+id/mhCover"
+        android:layout_width="200dp"
+        android:layout_height="200dp"
+        android:background="#FF272727"
+        android:scaleType="centerCrop" />
+
+    <TextView
+        android:id="@+id/mhTitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:gravity="center"
+        android:textColor="@color/text"
+        android:textSize="22sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/mhSub"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:gravity="center"
+        android:textColor="@color/sub"
+        android:textSize="13sp" />
+
+    <LinearLayout
+        android:id="@+id/mhButtons"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/mhPlay"
+            style="@style/Chip"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_marginEnd="6dp"
+            android:layout_weight="1"
+            android:background="@drawable/chip_selected"
+            android:text="@string/play_all"
+            android:textColor="#0F0F0F"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/mhShuffle"
+            style="@style/Chip"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_marginStart="6dp"
+            android:layout_weight="1"
+            android:text="@string/shuffle"
+            android:textStyle="bold" />
+    </LinearLayout>
+</LinearLayout>

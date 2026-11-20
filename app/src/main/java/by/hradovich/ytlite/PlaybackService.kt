@@ -181,7 +181,7 @@ class PlaybackService : MediaSessionService() {
         override fun onPostConnect(session: MediaSession, controller: MediaSession.ControllerInfo) {
             if (isVideoClient(controller)) {
                 videoClients++
-                setVideo(!audioOnly)
+                setVideo(!audioOnly && !isMusic(player.currentMediaItem))
             }
         }
 
@@ -251,6 +251,7 @@ class PlaybackService : MediaSessionService() {
         if (key == "quality" || key == "qualityMobile") main.post { reapplyQuality() }
         if (key == "boostDb" || key == "nightMode") main.post { applySound() }
         if (key == "normalize") main.post { applyVolume() }
+        if (key == "musicRepeat") main.post { applyRepeat() }
     }
 
     private fun reapplyQuality() {
@@ -451,7 +452,8 @@ class PlaybackService : MediaSessionService() {
             val music = isMusic(mediaItem)
             Queue.played(QItem(mediaItem.mediaId, md.title?.toString().orEmpty(), md.artist?.toString().orEmpty(), md.artworkUri?.toString(), music))
             player.setPlaybackSpeed(if (music) 1f else Prefs.speed)
-            if (music) setVideo(false)
+            if (music) setVideo(false) // у музыки видео не грузим вообще
+            applyRepeat()
             applyVolume()
         }
 
@@ -519,7 +521,7 @@ class PlaybackService : MediaSessionService() {
     /** Растёт при каждом новом открытии: устаревшие фоновые загрузки не перебивают выбор пользователя. */
     private var playToken = 0
 
-    fun isMusic(item: MediaItem?) = item?.mediaMetadata?.extras?.getBoolean(EXTRA_MUSIC) == true
+    val currentIsMusic: Boolean get() = isMusic(player.currentMediaItem)
 
     /** Включить элемент очереди (потоки получаем в фоне). */
     fun play(q: QItem) {
@@ -580,6 +582,13 @@ class PlaybackService : MediaSessionService() {
         Queue.poll()?.let { play(it); return }
         val cur = player.currentMediaItem ?: return
         val music = isMusic(cur)
+        // музыка: «повторять всё» — список заново
+        if (music && Prefs.musicRepeat == 1 && Queue.source.isNotEmpty()) {
+            val list = if (Queue.shuffled) Queue.source.shuffled() else Queue.source
+            Queue.replace(list.drop(1))
+            play(list[0])
+            return
+        }
         if (!fromUser && !(if (music) Prefs.musicRadio else Prefs.autoplay)) return
         val token = ++playToken
         val seen = Queue.history.map { it.id }.toSet()
@@ -627,6 +636,10 @@ class PlaybackService : MediaSessionService() {
         override fun seekToNextMediaItem() = playNext(fromUser = true)
         override fun seekToPrevious() = playPrevious()
         override fun seekToPreviousMediaItem() = playPrevious()
+    }
+
+    private fun applyRepeat() {
+        player.repeatMode = if (isMusic(player.currentMediaItem) && Prefs.musicRepeat == 2) Player.REPEAT_MODE_ONE else Player.REPEAT_MODE_OFF
     }
 
     // ---------- звук: выравнивание, усиление, ночной режим ----------
@@ -737,6 +750,8 @@ class PlaybackService : MediaSessionService() {
         const val HINT_VIDEO = "video"
         const val EXTRA_MUSIC = "music"
         private const val FADE_MS = 10_000L
+
+        fun isMusic(item: MediaItem?) = item?.mediaMetadata?.extras?.getBoolean(EXTRA_MUSIC) == true
 
         /** Сервис работает в том же процессе — экраны обращаются к нему напрямую (только из главного потока). */
         var instance: PlaybackService? = null
