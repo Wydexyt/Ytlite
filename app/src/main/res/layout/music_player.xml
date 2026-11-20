@@ -53,6 +53,18 @@
             android:layout_gravity="center"
             android:adjustViewBounds="true"
             android:scaleType="fitCenter" />
+
+        <!-- Текст песни (караоке) поверх обложки -->
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/muLyricsList"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@color/bg"
+            android:clipToPadding="false"
+            android:fadingEdgeLength="48dp"
+            android:paddingVertical="40dp"
+            android:requiresFadingEdge="vertical"
+            android:visibility="gone" />
     </FrameLayout>
 
     <LinearLayout

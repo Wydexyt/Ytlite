@@ -202,6 +202,11 @@
     <string name="dislike">Dislike</string>
     <string name="music_liked_toast">Added to Liked music</string>
     <string name="tab_library">Library</string>
+    <string name="unlike">Remove from Liked music</string>
+    <string name="save_to_library">Save to library</string>
+    <string name="in_library">In library ✓</string>
+    <string name="notifications">Notifications</string>
+    <string name="no_notifications">No notifications</string>
     <plurals name="replies">
         <item quantity="one">%1$s reply</item>
         <item quantity="other">%1$s replies</item>

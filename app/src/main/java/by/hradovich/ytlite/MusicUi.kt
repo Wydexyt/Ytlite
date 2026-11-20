@@ -82,10 +82,30 @@ object MusicNav {
         act.showMusicPlayer(q)
     }
 
-    /** Долгий тап по треку: в очередь. */
+    /** Лайк трека (в «Понравившуюся музыку») или снять лайк. */
+    fun toggleLike(act: android.app.Activity, id: String, liked: Boolean) {
+        if (!Auth.loggedIn) {
+            Toast.makeText(act, R.string.sign_in_needed, Toast.LENGTH_SHORT).show()
+            return
+        }
+        val now = !liked
+        Likes.seen(id, now)
+        if (now) Toast.makeText(act, R.string.music_liked_toast, Toast.LENGTH_SHORT).show()
+        Net.io.execute {
+            runCatching { Music.rate(id, if (now) "LIKE" else "INDIFFERENT") }.onFailure {
+                ErrorLog.log("Лайк $id", it)
+                Likes.seen(id, liked)
+                act.runOnUiThread { Toast.makeText(act, R.string.try_again, Toast.LENGTH_SHORT).show() }
+            }
+        }
+    }
+
+    /** Долгий тап по треку: в очередь, лайк. */
     fun menu(anchor: View, item: MusicItem) {
         if (item.type != MusicItem.Type.SONG) return
         val m = PopupMenu(anchor.context, anchor)
+        val liked = Likes.liked(item.id, item.liked)
+        m.menu.add(0, 4, 0, if (liked) R.string.unlike else R.string.like)
         m.menu.add(0, 1, 0, R.string.play_next)
         m.menu.add(0, 2, 1, R.string.add_to_queue)
         m.menu.add(0, 3, 2, R.string.share)
@@ -99,6 +119,7 @@ object MusicNav {
                     Toast.makeText(anchor.context, if (it.itemId == 1) R.string.queued_next else R.string.queued, Toast.LENGTH_SHORT).show()
                 }
                 3 -> Share.video(anchor.context, item.id, item.title)
+                4 -> (anchor.context as? android.app.Activity)?.let { a -> toggleLike(a, item.id, liked) }
             }
             true
         }
@@ -108,6 +129,10 @@ object MusicNav {
 
 /** Полки YouTube Music: заголовок + карусель карточек или список треков. */
 class MusicSectionsAdapter(private val act: MainActivity) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+    companion object {
+        private const val LIKES = "likes"
+    }
+
     private sealed class Row
     private class Title(val text: String) : Row()
     private class Carousel(val items: List<MusicItem>) : Row()
@@ -115,6 +140,33 @@ class MusicSectionsAdapter(private val act: MainActivity) : RecyclerView.Adapter
 
     private val rows = ArrayList<Row>()
     private val pool = RecyclerView.RecycledViewPool()
+    private val ui = Handler(Looper.getMainLooper())
+    private val likesListener: () -> Unit = { ui.post { notifyItemRangeChanged(0, rows.size, LIKES) } }
+
+    override fun onAttachedToRecyclerView(rv: RecyclerView) = Likes.listen(likesListener)
+    override fun onDetachedFromRecyclerView(rv: RecyclerView) = Likes.unlisten(likesListener)
+
+    override fun onBindViewHolder(h: RecyclerView.ViewHolder, position: Int, payloads: MutableList<Any>) {
+        val r = rows[position]
+        if (payloads.contains(LIKES)) {
+            if (r is Track) bindLike(h.itemView, r.item)
+            return
+        }
+        onBindViewHolder(h, position)
+    }
+
+    private fun bindLike(v: View, item: MusicItem) {
+        val btn = v.findViewById<ImageButton>(R.id.mrLike)
+        if (item.type != MusicItem.Type.SONG) {
+            btn.visibility = View.GONE
+            return
+        }
+        val liked = Likes.liked(item.id, item.liked)
+        btn.visibility = View.VISIBLE
+        btn.setColorFilter(if (liked) act.getColor(R.color.link) else 0x66FFFFFF)
+        btn.contentDescription = act.getString(if (liked) R.string.unlike else R.string.like)
+        btn.setOnClickListener { MusicNav.toggleLike(act, item.id, Likes.liked(item.id, item.liked)) }
+    }
 
     @SuppressLint("NotifyDataSetChanged")
     fun submit(sections: List<MusicSection>) {
@@ -164,6 +216,7 @@ class MusicSectionsAdapter(private val act: MainActivity) : RecyclerView.Adapter
         }
         v.setOnClickListener { MusicNav.open(act, item, section) }
         v.setOnLongClickListener { MusicNav.menu(it, item); true }
+        bindLike(v, item)
     }
 
     private inner class CardAdapter(val items: List<MusicItem>) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
@@ -289,12 +342,8 @@ class MusicTab(private val act: MainActivity, parent: ViewGroup) {
         val g = ++gen
         Net.io.execute {
             val r = runCatching {
-                if (i == 0) Music.home() else {
-                    val liked = MusicSection("", listOf(
-                        MusicItem(MusicItem.Type.PLAYLIST, "VLLM", Lang.str(R.string.music_liked), "", null)
-                    ), list = true)
-                    listOf(liked) + Music.library()
-                }
+                // «Понравившаяся музыка» приходит в плейлистах сама, с обложкой
+                if (i == 0) Music.home() else Music.library()
             }.onFailure { ErrorLog.log("Музыка", it) }
             act.runOnUiThread {
                 if (g != gen) return@runOnUiThread
@@ -347,6 +396,7 @@ class MusicPageView(
                 progress.visibility = View.GONE
                 r.onSuccess {
                     page = it
+                    saved = it.saved
                     if (query == null) {
                         view.findViewById<TextView>(R.id.topTitle).text = it.title
                         header.notifyItemInserted(0)
@@ -368,6 +418,7 @@ class MusicPageView(
     }
 
     private var shown: List<MusicSection> = emptyList()
+    private var saved = false
     private var tracks: List<QItem> = emptyList()
     private var closed = false
 
@@ -435,6 +486,32 @@ class MusicPageView(
             }
             v.findViewById<TextView>(R.id.mhTitle).text = p.title
             v.findViewById<TextView>(R.id.mhSub).text = p.subtitle
+            val save = v.findViewById<TextView>(R.id.mhSave)
+            val pl = p.savePlaylistId
+            if (pl != null && Auth.loggedIn) {
+                save.visibility = View.VISIBLE
+                fun render() {
+                    save.text = act.getString(if (saved) R.string.in_library else R.string.save_to_library)
+                    save.setBackgroundResource(if (saved) R.drawable.chip else R.drawable.chip_selected)
+                    save.setTextColor(if (saved) act.getColor(R.color.text) else 0xFF0F0F0F.toInt())
+                }
+                render()
+                save.setOnClickListener {
+                    val now = !saved
+                    saved = now
+                    render()
+                    Net.io.execute {
+                        runCatching { Music.savePlaylist(pl, now) }.onFailure {
+                            ErrorLog.log("Сохранить $pl", it)
+                            act.runOnUiThread {
+                                saved = !now
+                                render()
+                                Toast.makeText(act, R.string.try_again, Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                }
+            } else save.visibility = View.GONE
             val sub = v.findViewById<TextView>(R.id.mhSubscribe)
             val ch = p.channelId
             if (ch != null && type == MusicItem.Type.ARTIST) sub.bindSubscribe(ch, p.subscribed) else sub.visibility = View.GONE
@@ -463,6 +540,10 @@ class MusicScreen(private val act: MainActivity, val root: View) {
     private var infoFor: String? = null
     private var likeStatus = "INDIFFERENT"
     private var lyricsId: String? = null
+    private val lyricsList: RecyclerView = root.findViewById(R.id.muLyricsList)
+    private var lines: List<LyricLine> = emptyList()
+    private var linesFor: String? = null
+    private var current = -1
     private var controller: MediaController? = null
     private val ui = Handler(Looper.getMainLooper())
     private var dragging = false
@@ -472,7 +553,8 @@ class MusicScreen(private val act: MainActivity, val root: View) {
     private val tick = object : Runnable {
         override fun run() {
             updateProgress()
-            if (visible && controller?.isPlaying == true) ui.postDelayed(this, 500)
+            updateLyricLine()
+            if (visible && controller?.isPlaying == true) ui.postDelayed(this, if (lyricsShown) 200 else 500)
         }
     }
 
@@ -481,6 +563,16 @@ class MusicScreen(private val act: MainActivity, val root: View) {
     }
 
     private val queueListener = { updateQueue() }
+    private val likesListener: () -> Unit = {
+        ui.post {
+            val id = infoFor ?: return@post
+            val l = Likes.liked(id, likeStatus == "LIKE")
+            if (l != (likeStatus == "LIKE")) {
+                likeStatus = if (l) "LIKE" else "INDIFFERENT"
+                updateLike()
+            }
+        }
+    }
 
     init {
         root.findViewById<View>(R.id.muClose).setOnClickListener { hide() }
@@ -492,7 +584,7 @@ class MusicScreen(private val act: MainActivity, val root: View) {
             PlaybackService.instance?.playNext(fromUser = true) ?: controller?.seekToNext()
         }
         root.findViewById<View>(R.id.muTimer).setOnClickListener { chooseSleep() }
-        root.findViewById<View>(R.id.muLyrics).setOnClickListener { showLyrics() }
+        root.findViewById<View>(R.id.muLyrics).setOnClickListener { toggleLyrics() }
         likeBtn.setOnClickListener { rate(if (likeStatus == "LIKE") "INDIFFERENT" else "LIKE") }
         dislikeBtn.setOnClickListener { rate(if (likeStatus == "DISLIKE") "INDIFFERENT" else "DISLIKE") }
         play.setOnClickListener { controller?.let { if (it.isPlaying) it.pause() else it.play() } }
@@ -533,12 +625,14 @@ class MusicScreen(private val act: MainActivity, val root: View) {
         controller = c
         c.addListener(listener)
         Queue.listen(queueListener)
+        Likes.listen(likesListener)
         update()
     }
 
     fun detach() {
         controller?.removeListener(listener)
         Queue.unlisten(queueListener)
+        Likes.unlisten(likesListener)
         controller = null
         ui.removeCallbacks(tick)
     }
@@ -605,6 +699,7 @@ class MusicScreen(private val act: MainActivity, val root: View) {
         }
         play.setImageResource(if (c.isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
         loadInfo(item.mediaId)
+        if (lyricsShown && linesFor != item.mediaId) loadLines()
         updateModes()
         updateProgress()
         ui.removeCallbacks(tick)
@@ -673,6 +768,7 @@ class MusicScreen(private val act: MainActivity, val root: View) {
                 if (infoFor != id) return@runOnUiThread
                 likeStatus = info.likeStatus
                 lyricsId = info.lyricsId
+                Likes.seen(id, info.likeStatus == "LIKE")
                 updateLike()
             }
         }
@@ -707,28 +803,103 @@ class MusicScreen(private val act: MainActivity, val root: View) {
         }
     }
 
-    private fun showLyrics() {
-        val id = controller?.currentMediaItem?.mediaId ?: return
+    // ---------- текст песни (караоке) ----------
+
+    private val lyricsShown get() = lyricsList.visibility == View.VISIBLE
+
+    private fun toggleLyrics() {
+        if (lyricsShown) {
+            lyricsList.visibility = View.GONE
+            return
+        }
+        if (lyricsList.adapter == null) {
+            lyricsList.layoutManager = LinearLayoutManager(act)
+            lyricsList.adapter = lyricsAdapter
+        }
+        lyricsList.visibility = View.VISIBLE
+        loadLines()
+        update()
+    }
+
+    private fun loadLines() {
+        val c = controller ?: return
+        val item = c.currentMediaItem ?: return
+        val id = item.mediaId
+        if (linesFor == id) return
+        linesFor = id
+        lines = emptyList()
+        current = -1
+        lyricsAdapter.message = act.getString(R.string.loading)
+        val title = (c.mediaMetadata.title ?: item.mediaMetadata.title)?.toString().orEmpty()
+        val artistName = (c.mediaMetadata.artist ?: item.mediaMetadata.artist)?.toString().orEmpty()
+        val dur = duration() / 1000
         val known = lyricsId.takeIf { infoFor == id }
-        Toast.makeText(act, R.string.loading, Toast.LENGTH_SHORT).show()
         Net.io.execute {
-            val text = runCatching { Music.lyrics(id, known) }.onFailure { ErrorLog.log("Текст песни $id", it) }.getOrNull()
+            val r = runCatching { Lyrics.get(id, title, artistName, dur, known) }.onFailure { ErrorLog.log("Текст песни $id", it) }
             act.runOnUiThread {
-                if (act.isFinishing) return@runOnUiThread
-                val pad = (24 * act.resources.displayMetrics.density).toInt()
-                val body = TextView(act).apply {
-                    this.text = text ?: act.getString(R.string.no_lyrics)
-                    textSize = 16f
-                    setLineSpacing(0f, 1.25f)
-                    setTextIsSelectable(true)
-                    setPadding(pad, pad / 2, pad, pad)
-                }
-                AlertDialog.Builder(act)
-                    .setTitle(title.text)
-                    .setView(android.widget.ScrollView(act).apply { addView(body) })
-                    .setPositiveButton(R.string.close, null)
-                    .show()
+                if (linesFor != id) return@runOnUiThread
+                lines = r.getOrNull().orEmpty()
+                lyricsAdapter.message = if (lines.isEmpty()) act.getString(R.string.no_lyrics) else null
+                updateLyricLine(force = true)
             }
         }
     }
+
+    /** Подсветить текущую строку и держать её по центру. */
+    private fun updateLyricLine(force: Boolean = false) {
+        if (!lyricsShown || lines.isEmpty() || lines[0].time < 0) return
+        val pos = controller?.currentPosition ?: return
+        val i = lines.indexOfLast { it.time <= pos + 300 }
+        if (i == current && !force) return
+        val old = current
+        current = i
+        if (old >= 0) lyricsAdapter.notifyItemChanged(old)
+        if (i >= 0) {
+            lyricsAdapter.notifyItemChanged(i)
+            (lyricsList.layoutManager as LinearLayoutManager).let { lm ->
+                val scroller = object : androidx.recyclerview.widget.LinearSmoothScroller(act) {
+                    override fun calculateDtToFit(viewStart: Int, viewEnd: Int, boxStart: Int, boxEnd: Int, snap: Int) =
+                        (boxStart + (boxEnd - boxStart) / 2) - (viewStart + (viewEnd - viewStart) / 2)
+                }
+                scroller.targetPosition = i
+                lm.startSmoothScroll(scroller)
+            }
+        }
+    }
+
+    private val lyricsAdapter = object : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+        var message: String? = null
+            @SuppressLint("NotifyDataSetChanged")
+            set(v) { field = v; notifyDataSetChanged() }
+
+        override fun getItemCount() = if (message != null) 1 else lines.size
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) =
+            object : RecyclerView.ViewHolder(LayoutInflater.from(parent.context).inflate(R.layout.item_lyric, parent, false)) {}
+
+        override fun onBindViewHolder(h: RecyclerView.ViewHolder, position: Int) {
+            val tv = h.itemView as TextView
+            val m = message
+            if (m != null) {
+                tv.text = m
+                tv.setTextColor(act.getColor(R.color.sub))
+                tv.setOnClickListener(null)
+                return
+            }
+            val line = lines[position]
+            tv.text = line.text.ifEmpty { "♪" }
+            val synced = line.time >= 0
+            tv.setTextColor(
+                when {
+                    !synced -> act.getColor(R.color.text)
+                    position == current -> 0xFFFFFFFF.toInt()
+                    else -> 0x66FFFFFF
+                }
+            )
+            tv.textSize = if (synced) 22f else 17f
+            // тап по строке — перемотать к ней
+            tv.setOnClickListener(if (synced) View.OnClickListener { controller?.seekTo(line.time); controller?.play() } else null)
+        }
+    }
+
 }

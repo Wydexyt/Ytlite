@@ -231,6 +231,10 @@ class MainActivity : Activity() {
         }
 
         accountIcon.setOnClickListener { showAccountMenu() }
+        findViewById<View>(R.id.bell).setOnClickListener {
+            setBadge(0)
+            openPage(NotificationsPage(this, pagesBox))
+        }
 
         mini.setOnClickListener {
             if (PlaybackService.isMusic(controller?.currentMediaItem)) showMusicPlayer() else expandPlayer()
@@ -321,6 +325,7 @@ class MainActivity : Activity() {
         pages.lastOrNull()?.onResume()
         updateAccountIcon()
         if (Auth.active?.id != shownAccount) accountChanged()
+        checkNotifications()
         val acc = Auth.active
         if (acc != null && acc.name.isEmpty()) {
             Net.io.execute {
@@ -538,6 +543,32 @@ class MainActivity : Activity() {
         }, 200)
     }
 
+    // ---------- уведомления ----------
+
+    private var notifCheckedAt = 0L
+    private var notifFor: String? = null
+
+    /** Счётчик непрочитанных — только при открытии приложения и не чаще раза в 5 минут (без фоновой работы). */
+    private fun checkNotifications() {
+        val acc = Auth.active
+        findViewById<View>(R.id.bellBox).visibility = if (acc != null) View.VISIBLE else View.GONE
+        if (acc == null) return
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (notifFor == acc.id && now - notifCheckedAt < 5 * 60_000) return
+        notifFor = acc.id
+        notifCheckedAt = now
+        Net.io.execute {
+            val n = runCatching { InnerTube.unseenCount() }.onFailure { ErrorLog.log("Уведомления: счётчик", it) }.getOrNull() ?: return@execute
+            runOnUiThread { if (Auth.active?.id == acc.id) setBadge(n) }
+        }
+    }
+
+    private fun setBadge(n: Int) {
+        val b = findViewById<TextView>(R.id.bellBadge)
+        b.visibility = if (n > 0) View.VISIBLE else View.GONE
+        b.text = if (n > 99) "99+" else n.toString()
+    }
+
     // ---------- аккаунты и меню ----------
 
     private fun updateAccountIcon() {
@@ -548,6 +579,9 @@ class MainActivity : Activity() {
 
     private fun accountChanged() {
         shownAccount = Auth.active?.id
+        setBadge(0)
+        notifCheckedAt = 0
+        checkNotifications()
         feeds.forEach { it.reset() }
         searchFeed.reset()
         musicTab.reset()

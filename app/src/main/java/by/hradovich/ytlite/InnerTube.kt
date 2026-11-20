@@ -468,6 +468,63 @@ object InnerTube {
         )
     }
 
+    // ---------- уведомления ----------
+
+    class Notification(
+        val text: String,
+        val time: String,
+        val avatar: String?,
+        val thumb: String?,
+        val videoId: String?,
+        val channelId: String?,
+        val read: Boolean,
+    )
+
+    fun notifications(): List<Notification> {
+        val j = post("notification/get_notification_menu", JSONObject().put("notificationsMenuRequestType", "NOTIFICATIONS_MENU_REQUEST_TYPE_INBOX"))
+        val out = ArrayList<Notification>()
+        fun walk(n: Any?) {
+            when (n) {
+                is JSONObject -> {
+                    n.optJSONObject("notificationRenderer")?.let { r ->
+                        val nav = r.optJSONObject("navigationEndpoint")
+                        out += Notification(
+                            text = r.optJSONObject("shortMessage").text(),
+                            time = r.optJSONObject("sentTimeText").text(),
+                            avatar = pickThumb(r.optJSONObject("thumbnail")?.optJSONArray("thumbnails"), 88),
+                            thumb = pickThumb(r.optJSONObject("videoThumbnail")?.optJSONArray("thumbnails"), 240),
+                            videoId = nav?.let { find(it, "watchEndpoint") }?.optString("videoId")?.ifEmpty { null },
+                            channelId = nav?.let { find(it, "browseEndpoint") }?.optString("browseId")?.takeIf { it.startsWith("UC") },
+                            read = r.optBoolean("read", true),
+                        )
+                        return
+                    }
+                    n.keys().forEach { walk(n.opt(it)) }
+                }
+                is JSONArray -> for (i in 0 until n.length()) walk(n.opt(i))
+            }
+        }
+        walk(j)
+        return out
+    }
+
+    /** Сколько непрочитанных уведомлений (для значка на колокольчике). */
+    fun unseenCount(): Int {
+        val j = post("notification/get_unseen_count", JSONObject())
+        var n = -1
+        fun walk(o: Any?) {
+            when (o) {
+                is JSONObject -> {
+                    if (o.has("unseenCount")) n = maxOf(n, o.optInt("unseenCount"))
+                    o.keys().forEach { walk(o.opt(it)) }
+                }
+                is JSONArray -> for (i in 0 until o.length()) walk(o.opt(i))
+            }
+        }
+        walk(j)
+        return n.coerceAtLeast(0)
+    }
+
     /** Имя и аватар активного аккаунта. */
     fun accountInfo(): Pair<String, String?>? {
         val h = find(post("account/account_menu", JSONObject()), "activeAccountHeaderRenderer") ?: return null

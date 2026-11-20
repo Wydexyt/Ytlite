@@ -196,6 +196,11 @@
     <string name="dislike">Не нравится</string>
     <string name="music_liked_toast">Добавлено в «Понравившуюся музыку»</string>
     <string name="tab_library">Библиотека</string>
+    <string name="unlike">Убрать из понравившихся</string>
+    <string name="save_to_library">В библиотеку</string>
+    <string name="in_library">В библиотеке ✓</string>
+    <string name="notifications">Уведомления</string>
+    <string name="no_notifications">Уведомлений нет</string>
     <plurals name="replies">
         <item quantity="one">%1$s ответ</item>
         <item quantity="few">%1$s ответа</item>

@@ -16,6 +16,7 @@ class MusicItem(
     val subtitle: String,
     val thumb: String?,
     val playlistId: String? = null,
+    val liked: Boolean = false, // трек уже в «Понравившейся музыке» (если YouTube Music это сообщил)
 ) {
     enum class Type { SONG, ALBUM, PLAYLIST, ARTIST, MIX }
 
@@ -39,8 +40,25 @@ class MusicPage(
     val channelId: String? = null, // исполнитель: на кого подписываться
     val subscribed: Boolean = false,
     val allTracksId: String? = null, // исполнитель: плейлист со всеми треками
+    val savePlaylistId: String? = null, // альбом/плейлист: что сохранять в библиотеку
+    val saved: Boolean = false,
     val continuation: String? = null, // длинный плейлист: продолжение списка треков
 )
+
+/** Что лайкнуто в этой сессии (и что YouTube Music пометил лайкнутым) — для кнопок в строках и в плеере. */
+object Likes {
+    private val state = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    private val listeners = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
+
+    fun liked(id: String, default: Boolean = false) = state[id] ?: default
+
+    fun seen(id: String, liked: Boolean) {
+        if (state.put(id, liked) != liked) listeners.forEach { it() }
+    }
+
+    fun listen(l: () -> Unit) { listeners += l }
+    fun unlisten(l: () -> Unit) { listeners -= l }
+}
 
 /** Запросы к YouTube Music (клиент WEB_REMIX) от имени активного аккаунта. */
 object Music {
@@ -138,6 +156,7 @@ object Music {
             .filter { !it.isNullOrBlank() }.joinToString(" · ")
         val cover = thumb(h?.optJSONObject("thumbnail") ?: h?.optJSONObject("foregroundThumbnail"), 544)
         val sub0 = find(j, "subscribeButtonRenderer")
+        val save = saveInfo(j, h, browseId)
         val secs = sections(j)
         // у треков альбома нет своих обложек и исполнителя — берём из шапки
         val tracks = secs.filter { it.list }.flatMap { it.items }.filter { it.type == MusicItem.Type.SONG }
@@ -147,8 +166,31 @@ object Music {
             title, sub, cover, secs, tracks,
             channelId = sub0?.optString("channelId")?.ifEmpty { null }, subscribed = sub0?.optBoolean("subscribed") == true,
             allTracksId = songs?.moreId?.takeIf { it != browseId },
+            savePlaylistId = save?.first,
+            saved = save?.second == true,
             continuation = songs?.continuation,
         )
+    }
+
+    /** Что сохранять в библиотеку и сохранено ли уже: кнопка-лайк в шапке альбома или плейлиста. */
+    private fun saveInfo(j: JSONObject, h: JSONObject?, browseId: String): Pair<String, Boolean>? {
+        if (browseId == "VLLM" || browseId.startsWith("UC")) return null
+        // кнопка-переключатель с likeEndpoint — та, что в YouTube Music «Сохранить в библиотеку»
+        var found: Pair<String, Boolean>? = null
+        walk(h ?: j) { o ->
+            if (found != null) return@walk
+            val t = o.optJSONObject("toggleButtonRenderer") ?: return@walk
+            val pl = find(t, "likeEndpoint")?.optJSONObject("target")?.optString("playlistId")?.ifEmpty { null } ?: return@walk
+            found = pl to t.optBoolean("isToggled")
+        }
+        found?.let { return it }
+        val pl = find(h, "watchEndpoint")?.optString("playlistId")?.ifEmpty { null }
+            ?: browseId.takeIf { it.startsWith("VL") }?.removePrefix("VL") ?: return null
+        return pl to false
+    }
+
+    fun savePlaylist(playlistId: String, save: Boolean) {
+        post(if (save) "like/like" else "like/removelike", JSONObject().put("target", JSONObject().put("playlistId", playlistId)))
     }
 
     /** Продолжение длинного списка: новые треки и следующий токен. */
@@ -186,6 +228,7 @@ object Music {
 
     /** Лайк через YouTube Music — так трек попадает в «Понравившуюся музыку». */
     fun rate(videoId: String, status: String) {
+        Likes.seen(videoId, status == "LIKE")
         val ep = when (status) {
             "LIKE" -> "like/like"
             "DISLIKE" -> "like/dislike"
@@ -294,7 +337,11 @@ object Music {
         val vid = r.optJSONObject("playlistItemData")?.optString("videoId")?.ifEmpty { null }
             ?: find(r.optJSONObject("overlay"), "watchEndpoint")?.optString("videoId")?.ifEmpty { null }
             ?: cols.optJSONObject(0)?.let { find(it, "watchEndpoint") }?.optString("videoId")?.ifEmpty { null }
-        if (vid != null) return MusicItem(MusicItem.Type.SONG, vid, title, sub, th)
+        if (vid != null) {
+            val liked = find(r.optJSONObject("menu"), "likeButtonRenderer")?.optString("likeStatus") == "LIKE"
+            if (liked) Likes.seen(vid, true)
+            return MusicItem(MusicItem.Type.SONG, vid, title, sub, th, liked = liked)
+        }
         val nav = r.optJSONObject("navigationEndpoint") ?: return null
         return fromNav(nav, title, sub, th)
     }
