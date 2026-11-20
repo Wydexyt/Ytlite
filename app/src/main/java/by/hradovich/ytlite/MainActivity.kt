@@ -401,6 +401,11 @@ class MainActivity : Activity() {
 
     fun openStats() = openPage(StatsPage(this, pagesBox))
 
+    fun openPlaylist(id: String) {
+        if (player.expanded) collapsePlayer()
+        openPage(PlaylistPage(this, pagesBox, id))
+    }
+
     private fun openPage(p: AppPage) {
         pages += p
         pagesBox.addView(p.view)
@@ -510,6 +515,7 @@ class MainActivity : Activity() {
         }
         menu.menu.add(1, ADD, 100, R.string.add_account)
         if (active != null) menu.menu.add(1, LOGOUT, 101, R.string.logout)
+        if (active != null) menu.menu.add(2, LIBRARY, 102, R.string.library)
         menu.menu.add(2, STATS, 102, R.string.stats)
         menu.menu.add(2, QUALITY_WIFI, 103, getString(R.string.quality_wifi, qualityName(Prefs.qualityWifi)))
         menu.menu.add(2, QUALITY_MOBILE, 104, getString(R.string.quality_mobile, qualityName(Prefs.qualityMobile)))
@@ -534,6 +540,7 @@ class MainActivity : Activity() {
                     .setNegativeButton(R.string.cancel, null)
                     .show()
                 STATS -> openStats()
+                LIBRARY -> openPage(LibraryPage(this, pagesBox))
                 QUALITY_WIFI -> chooseQuality(true)
                 QUALITY_MOBILE -> chooseQuality(false)
                 SPONSOR -> showSponsorSettings()
@@ -791,6 +798,7 @@ class MainActivity : Activity() {
         private const val ROLLBACK = Menu.FIRST + 1010
         private const val SOUND = Menu.FIRST + 1011
         private const val PIP = Menu.FIRST + 1012
+        private const val LIBRARY = Menu.FIRST + 1013
     }
 }
 

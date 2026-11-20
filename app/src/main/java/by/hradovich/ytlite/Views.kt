@@ -82,7 +82,13 @@ fun TextView.bindSubscribe(channelId: String?, subscribed: Boolean) {
     }
 }
 
-class VideoAdapter(private val onClick: (Video) -> Unit) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+class VideoAdapter(
+    private val onClick: (Video) -> Unit,
+    /** Пункт «Убрать из плейлиста» (на странице своего плейлиста). */
+    private val onRemove: ((Video) -> Unit)? = null,
+) : RecyclerView.Adapter<RecyclerView.ViewHolder>() {
+    /** Можно ли убирать видео (только в своих плейлистах). */
+    var removable = true
     private val items = ArrayList<Video>()
     private val ids = HashSet<String>()
 
@@ -184,6 +190,13 @@ class VideoAdapter(private val onClick: (Video) -> Unit) : RecyclerView.Adapter<
         h.avatar.visibility = if (v.avatar == null && v.channel.isEmpty()) View.GONE else View.VISIBLE
         val ch = v.channelId
         h.avatar.setOnClickListener(if (ch != null) View.OnClickListener { it.context.openChannel(ch) } else null)
+        if (v.isPlaylist) {
+            h.meta.text = v.channel
+            h.avatar.visibility = View.GONE
+            h.itemView.setOnClickListener { it.context.openPlaylist(v.id) }
+            h.itemView.setOnLongClickListener(null)
+            return
+        }
         h.itemView.setOnClickListener { onClick(v) }
         h.itemView.setOnLongClickListener { showMenu(it, v); true }
     }
@@ -194,6 +207,11 @@ class VideoAdapter(private val onClick: (Video) -> Unit) : RecyclerView.Adapter<
         val menu = PopupMenu(ctx, anchor)
         menu.menu.add(0, 4, 0, R.string.play_next)
         menu.menu.add(0, 5, 0, R.string.add_to_queue)
+        if (Auth.loggedIn) {
+            menu.menu.add(0, 6, 0, R.string.watch_later_add)
+            menu.menu.add(0, 7, 0, R.string.save_to_playlist)
+        }
+        if (onRemove != null && removable) menu.menu.add(0, 8, 0, R.string.remove_from_playlist)
         if (v.notInterestedToken != null && Auth.loggedIn) menu.menu.add(0, 1, 0, R.string.not_interested)
         menu.menu.add(0, 2, 1, R.string.share)
         if (v.channelId != null) menu.menu.add(0, 3, 2, R.string.open_channel)
@@ -208,6 +226,12 @@ class VideoAdapter(private val onClick: (Video) -> Unit) : RecyclerView.Adapter<
                     }
                 }
                 2 -> Share.video(ctx, v.id, v.title)
+                6 -> Library.addToWatchLater(ctx, v.id)
+                7 -> (ctx as? android.app.Activity)?.let { Library.saveToPlaylist(it, v.id) }
+                8 -> {
+                    remove(v.id)
+                    onRemove?.invoke(v)
+                }
                 4, 5 -> {
                     val svc = PlaybackService.instance
                     if (svc != null) svc.enqueue(QItem.of(v), next = item.itemId == 4)

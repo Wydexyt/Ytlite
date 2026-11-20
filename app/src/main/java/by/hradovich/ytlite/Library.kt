@@ -1,0 +1,229 @@
+package by.hradovich.ytlite
+
+import android.app.Activity
+import android.app.AlertDialog
+import android.content.Context
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.EditText
+import android.widget.ProgressBar
+import android.widget.TextView
+import android.widget.Toast
+import androidx.recyclerview.widget.ConcatAdapter
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
+
+/** «Смотреть позже» и плейлисты аккаунта. */
+object Library {
+    const val WATCH_LATER = "WL"
+    const val LIKED = "LL"
+
+    fun addToWatchLater(ctx: Context, videoId: String) {
+        Net.io.execute {
+            val ok = runCatching { InnerTube.addToPlaylist(WATCH_LATER, videoId) }.onFailure { ErrorLog.log("Смотреть позже", it) }.isSuccess
+            (ctx as? Activity)?.runOnUiThread {
+                Toast.makeText(ctx, if (ok) R.string.watch_later_added else R.string.try_again, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    /** Выбор плейлиста: отметки — где видео уже есть; снятие отметки убирает. */
+    fun saveToPlaylist(act: Activity, videoId: String) {
+        Net.io.execute {
+            val r = runCatching { InnerTube.playlistsFor(videoId) }.onFailure { ErrorLog.log("Плейлисты для $videoId", it) }
+            act.runOnUiThread {
+                if (act.isFinishing) return@runOnUiThread
+                val list = r.getOrNull()
+                if (list == null) {
+                    Toast.makeText(act, R.string.try_again, Toast.LENGTH_SHORT).show()
+                    return@runOnUiThread
+                }
+                val checked = list.map { it.third }.toBooleanArray()
+                AlertDialog.Builder(act)
+                    .setTitle(R.string.save_to_playlist)
+                    .setMultiChoiceItems(list.map { it.second }.toTypedArray(), checked) { _, i, on ->
+                        val id = list[i].first
+                        Net.io.execute {
+                            val ok = runCatching {
+                                if (on) InnerTube.addToPlaylist(id, videoId) else InnerTube.removeFromPlaylist(id, videoId)
+                            }.onFailure { ErrorLog.log("Плейлист $id", it) }.isSuccess
+                            act.runOnUiThread {
+                                Toast.makeText(
+                                    act,
+                                    if (!ok) act.getString(R.string.try_again)
+                                    else act.getString(if (on) R.string.saved_to else R.string.removed_from, list[i].second),
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
+                    }
+                    .setNeutralButton(R.string.new_playlist) { _, _ -> createPlaylist(act, videoId) }
+                    .setPositiveButton(R.string.done, null)
+                    .show()
+            }
+        }
+    }
+
+    private fun createPlaylist(act: Activity, videoId: String) {
+        val input = EditText(act).apply { setHint(R.string.playlist_name) }
+        val pad = (20 * act.resources.displayMetrics.density).toInt()
+        AlertDialog.Builder(act)
+            .setTitle(R.string.new_playlist)
+            .setView(android.widget.FrameLayout(act).apply { setPadding(pad, pad / 2, pad, 0); addView(input) })
+            .setPositiveButton(R.string.create) { _, _ ->
+                val name = input.text.toString().trim().ifEmpty { return@setPositiveButton }
+                Net.io.execute {
+                    val ok = runCatching { InnerTube.createPlaylist(name, videoId) }.onFailure { ErrorLog.log("Новый плейлист", it) }.isSuccess
+                    act.runOnUiThread {
+                        Toast.makeText(act, if (ok) act.getString(R.string.saved_to, name) else act.getString(R.string.try_again), Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
+            .setNegativeButton(R.string.cancel, null)
+            .show()
+    }
+
+    /** Включить список: с выбранного видео, остальные — в очередь. */
+    fun playFrom(act: MainActivity, list: List<Video>, start: Int, shuffle: Boolean = false) {
+        val items = list.filter { !it.isPlaylist && !it.isChannel }.map { QItem.of(it) }
+        if (items.isEmpty()) return
+        val ordered = if (shuffle) items.shuffled() else items.drop(start.coerceIn(0, items.size - 1))
+        Queue.replace(ordered.drop(1))
+        act.openVideo(ordered[0].id, ordered[0].title)
+        Toast.makeText(act, act.getString(R.string.queue_is, Queue.items.size), Toast.LENGTH_SHORT).show()
+    }
+}
+
+/** Библиотека: «Смотреть позже», «Понравившиеся» и плейлисты аккаунта. */
+class LibraryPage(private val act: MainActivity, parent: ViewGroup) : AppPage {
+    override val view: View = LayoutInflater.from(act).inflate(R.layout.page_channel, parent, false)
+    private val list: RecyclerView = view.findViewById(R.id.list)
+    private val adapter = VideoAdapter({})
+
+    init {
+        view.findViewById<View>(R.id.back).setOnClickListener { act.closePage(this) }
+        view.findViewById<TextView>(R.id.topTitle).setText(R.string.library)
+        view.findViewById<ProgressBar>(R.id.progress).visibility = View.GONE
+        list.layoutManager = LinearLayoutManager(act)
+        list.adapter = adapter
+        val fixed = listOf(
+            Video(Library.WATCH_LATER, act.getString(R.string.watch_later), "", "", "", null, null, isPlaylist = true),
+            Video(Library.LIKED, act.getString(R.string.liked_videos), "", "", "", null, null, isPlaylist = true),
+        )
+        adapter.submit(fixed)
+        Net.io.execute {
+            val r = runCatching { InnerTube.playlists() }.onFailure { ErrorLog.log("Плейлисты", it) }
+            act.runOnUiThread { r.onSuccess { adapter.submit(fixed + it) } }
+        }
+    }
+}
+
+/** Плейлист: «Воспроизвести всё», «Перемешать», видео с догрузкой; в своих — «Убрать из плейлиста». */
+class PlaylistPage(private val act: MainActivity, parent: ViewGroup, private val id: String) : AppPage {
+    override val view: View = LayoutInflater.from(act).inflate(R.layout.page_channel, parent, false)
+    private val list: RecyclerView = view.findViewById(R.id.list)
+    private val progress: ProgressBar = view.findViewById(R.id.progress)
+    private val message: TextView = view.findViewById(R.id.message)
+    private var info: PlaylistInfo? = null
+    private val loaded = ArrayList<Video>()
+    private val header = HeaderAdapter()
+    private val videos = VideoAdapter(
+        onClick = { v -> Library.playFrom(act, loaded, loaded.indexOfFirst { it.id == v.id }) },
+        onRemove = { v ->
+            loaded.removeAll { it.id == v.id }
+            Net.io.execute {
+                runCatching { InnerTube.removeFromPlaylist(id, v.id) }.onFailure {
+                    ErrorLog.log("Убрать из плейлиста", it)
+                    act.runOnUiThread { Toast.makeText(act, R.string.try_again, Toast.LENGTH_SHORT).show() }
+                }
+            }
+        },
+    )
+    private var continuation: String? = null
+    private var loading = false
+
+    init {
+        view.findViewById<View>(R.id.back).setOnClickListener { act.closePage(this) }
+        val lm = LinearLayoutManager(act)
+        list.layoutManager = lm
+        list.adapter = ConcatAdapter(header, videos)
+        list.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
+                if (dy > 0 && lm.findLastVisibleItemPosition() >= rv.adapter!!.itemCount - 5) loadMore()
+            }
+        })
+        videos.showSkeleton()
+        progress.visibility = View.GONE
+        Net.io.execute {
+            val r = runCatching { InnerTube.playlist(id) }
+            act.runOnUiThread {
+                r.onSuccess {
+                    info = it
+                    videos.removable = it.editable
+                    view.findViewById<TextView>(R.id.topTitle).text = it.title
+                    header.notifyItemInserted(0)
+                    loaded += it.videos.items
+                    videos.submit(it.videos.items)
+                    continuation = it.videos.continuation
+                    if (it.videos.items.isEmpty()) {
+                        message.setText(R.string.playlist_empty)
+                        message.visibility = View.VISIBLE
+                    }
+                }.onFailure {
+                    ErrorLog.log("Плейлист $id", it)
+                    videos.submit(emptyList())
+                    message.text = act.getString(R.string.channel_error, it.message)
+                    message.visibility = View.VISIBLE
+                }
+            }
+        }
+    }
+
+    override fun onResume() = videos.refreshProgress()
+
+    private fun loadMore() {
+        if (loading) return
+        val token = continuation ?: return
+        loading = true
+        Net.io.execute {
+            val r = runCatching { InnerTube.more("browse", token) }
+            act.runOnUiThread {
+                loading = false
+                r.onSuccess {
+                    loaded += it.items
+                    videos.append(it.items)
+                    continuation = it.continuation
+                }.onFailure { continuation = null }
+            }
+        }
+    }
+
+    private inner class HeaderAdapter : RecyclerView.Adapter<HeaderAdapter.VH>() {
+        inner class VH(v: View) : RecyclerView.ViewHolder(v) {
+            val title: TextView = v.findViewById(R.id.plTitle)
+            val meta: TextView = v.findViewById(R.id.plMeta)
+            val play: View = v.findViewById(R.id.plPlay)
+            val shuffle: View = v.findViewById(R.id.plShuffle)
+        }
+
+        override fun getItemCount() = if (info == null) 0 else 1
+
+        override fun onCreateViewHolder(parent: ViewGroup, viewType: Int) =
+            VH(LayoutInflater.from(parent.context).inflate(R.layout.item_playlist_header, parent, false))
+
+        override fun onBindViewHolder(h: VH, position: Int) {
+            val i = info ?: return
+            h.title.text = i.title
+            h.meta.text = i.meta
+            h.meta.visibility = if (i.meta.isEmpty()) View.GONE else View.VISIBLE
+            h.play.setOnClickListener { Library.playFrom(act, loaded, 0) }
+            h.shuffle.setOnClickListener { Library.playFrom(act, loaded, 0, shuffle = true) }
+        }
+    }
+}
+
+/** Открыть плейлист из любого места интерфейса. */
+fun Context.openPlaylist(id: String) {
+    (this as? MainActivity)?.openPlaylist(id)
+}

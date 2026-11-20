@@ -23,7 +23,10 @@ data class Video(
     val isChannel: Boolean = false, // карточка канала в поиске (id = channelId)
     val subscribed: Boolean = false,
     val notInterestedToken: String? = null,
+    val isPlaylist: Boolean = false, // карточка плейлиста (id = playlistId)
 )
+
+class PlaylistInfo(val id: String, val title: String, val meta: String, val editable: Boolean, val videos: Page)
 
 class ChannelInfo(
     val id: String,
@@ -403,6 +406,68 @@ object InnerTube {
         }
     }
 
+    // ---------- библиотека: «Смотреть позже», плейлисты ----------
+
+    /** Плейлисты аккаунта (свои и сохранённые). */
+    fun playlists(): List<Video> = parse(post("browse", JSONObject().put("browseId", "FEplaylist_aggregation")))
+        .items.filter { it.isPlaylist && it.id != "WL" && it.id != "LL" }
+
+    fun playlist(id: String): PlaylistInfo {
+        val j = post("browse", JSONObject().put("browseId", "VL$id"))
+        val title = j.optJSONObject("metadata")?.optJSONObject("playlistMetadataRenderer")?.optString("title")
+            ?.ifEmpty { null }
+            ?: find(j, "pageHeaderViewModel")?.optJSONObject("title")?.let { find(it, "text") }?.optString("content")
+            ?: ""
+        val meta = find(j, "pageHeaderViewModel")?.optJSONObject("metadata")?.let { m ->
+            val rows = findArray(m, "metadataRows") ?: return@let null
+            (0 until rows.length()).flatMap { i ->
+                val ps = rows.optJSONObject(i)?.optJSONArray("metadataParts") ?: return@flatMap emptyList()
+                (0 until ps.length()).mapNotNull { k -> ps.optJSONObject(k)?.optJSONObject("text")?.optString("content")?.takeIf { it.isNotBlank() } }
+            }.joinToString(" · ")
+        } ?: find(j, "playlistHeaderRenderer")?.let { h ->
+            listOf(h.optJSONObject("ownerText").text(), h.optJSONObject("numVideosText").text()).filter { it.isNotBlank() }.joinToString(" · ")
+        }.orEmpty()
+        val editable = id == "WL" || id == "LL" || j.toString().contains("ACTION_REMOVE_VIDEO")
+        return PlaylistInfo(id, title, meta, editable, parse(j))
+    }
+
+    private fun editPlaylist(playlistId: String, action: JSONObject) {
+        val j = post("browse/edit_playlist", JSONObject().put("playlistId", playlistId).put("actions", JSONArray().put(action)))
+        if (j.optString("status").let { it.isNotEmpty() && it != "STATUS_SUCCEEDED" }) throw IOException(j.optString("status"))
+    }
+
+    fun addToPlaylist(playlistId: String, videoId: String) =
+        editPlaylist(playlistId, JSONObject().put("action", "ACTION_ADD_VIDEO").put("addedVideoId", videoId))
+
+    fun removeFromPlaylist(playlistId: String, videoId: String) =
+        editPlaylist(playlistId, JSONObject().put("action", "ACTION_REMOVE_VIDEO_BY_VIDEO_ID").put("removedVideoId", videoId))
+
+    /** Свои плейлисты для «Сохранить в плейлист»: id, название, есть ли там уже это видео. */
+    fun playlistsFor(videoId: String): List<Triple<String, String, Boolean>> {
+        val out = ArrayList<Triple<String, String, Boolean>>()
+        fun walk(n: Any?) {
+            when (n) {
+                is JSONObject -> {
+                    n.optJSONObject("playlistAddToOptionRenderer")?.let { o ->
+                        val id = o.optString("playlistId")
+                        if (id.isNotEmpty()) out += Triple(id, o.optJSONObject("title").text(), o.optString("containsSelectedVideos") == "ALL")
+                    }
+                    n.keys().forEach { walk(n.opt(it)) }
+                }
+                is JSONArray -> for (i in 0 until n.length()) walk(n.opt(i))
+            }
+        }
+        walk(post("playlist/get_add_to_playlist", JSONObject().put("videoIds", JSONArray().put(videoId))))
+        return out
+    }
+
+    fun createPlaylist(title: String, videoId: String) {
+        post(
+            "playlist/create", JSONObject().put("title", title).put("privacyStatus", "PRIVATE")
+                .put("videoIds", JSONArray().put(videoId))
+        )
+    }
+
     /** Имя и аватар активного аккаунта. */
     fun accountInfo(): Pair<String, String?>? {
         val h = find(post("account/account_menu", JSONObject()), "activeAccountHeaderRenderer") ?: return null
@@ -429,7 +494,7 @@ object InnerTube {
 
     // ---------- разбор ответов ----------
 
-    private val VIDEO_KEYS = listOf("videoRenderer", "gridVideoRenderer", "compactVideoRenderer")
+    private val VIDEO_KEYS = listOf("videoRenderer", "gridVideoRenderer", "compactVideoRenderer", "playlistVideoRenderer")
     private val SKIP = setOf(
         "responseContext", "frameworkUpdates", "topbar", "reelShelfRenderer",
         "trackingParams", "playerOverlays", "videoPrimaryInfoRenderer", "videoSecondaryInfoRenderer",
@@ -455,6 +520,9 @@ object InnerTube {
                     }
                     n.optJSONObject("lockupViewModel")?.let { fromLockup(it) }?.let { out.putIfAbsent(it.id, it) }
                     n.optJSONObject("channelRenderer")?.let { fromChannel(it) }?.let { out.putIfAbsent(it.id, it) }
+                    for (key in PLAYLIST_KEYS) {
+                        n.optJSONObject(key)?.let { fromPlaylist(it) }?.let { out.putIfAbsent(it.id, it) }
+                    }
                     n.optJSONObject("continuationItemRenderer")?.let { c ->
                         (c.optJSONObject("continuationEndpoint")?.optJSONObject("continuationCommand")
                             ?: find(c, "continuationCommand"))
@@ -486,6 +554,7 @@ object InnerTube {
             (v.optJSONObject("shortViewCountText") ?: v.optJSONObject("viewCountText")).text(),
             v.optJSONObject("publishedTimeText").text(),
         ).filter { it.isNotBlank() }.joinToString(" · ")
+            .ifEmpty { v.optJSONObject("videoInfo").text() } // в плейлистах: «1,2 млн просмотров • 2 года назад»
         val avatarArr = v.optJSONObject("channelThumbnailSupportedRenderers")
             ?.optJSONObject("channelThumbnailWithLinkRenderer")
             ?.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
@@ -517,7 +586,50 @@ object InnerTube {
         )
     }
 
+    private val PLAYLIST_KEYS = listOf("gridPlaylistRenderer", "playlistRenderer")
+
+    /** Плейлисты (не миксы RD… — их нельзя открыть списком). */
+    private fun fromPlaylist(p: JSONObject): Video? {
+        val id = p.optString("playlistId").ifEmpty { return null }
+        if (id.startsWith("RD")) return null
+        val thumbs = p.optJSONObject("thumbnail")?.optJSONArray("thumbnails")
+            ?: findArray(p.optJSONArray("thumbnails") ?: p.optJSONObject("thumbnailRenderer"), "thumbnails")
+        return Video(
+            id = id, title = p.optJSONObject("title").text(),
+            channel = (p.optJSONObject("shortBylineText") ?: p.optJSONObject("longBylineText")).text(),
+            meta = "", duration = (p.optJSONObject("videoCountShortText") ?: p.optJSONObject("videoCountText")).text(),
+            thumb = pickThumb(thumbs, 640), avatar = null, isPlaylist = true,
+        )
+    }
+
+    private fun lockupPlaylist(l: JSONObject): Video? {
+        val id = l.optString("contentId").ifEmpty { return null }
+        if (id.startsWith("RD")) return null
+        val md = l.optJSONObject("metadata")?.optJSONObject("lockupMetadataViewModel")
+        val parts = mutableListOf<String>()
+        val rows = md?.optJSONObject("metadata")?.optJSONObject("contentMetadataViewModel")?.optJSONArray("metadataRows")
+        if (rows != null) for (i in 0 until rows.length()) {
+            val ps = rows.optJSONObject(i)?.optJSONArray("metadataParts") ?: continue
+            for (j in 0 until ps.length()) {
+                val t = ps.optJSONObject(j)?.optJSONObject("text")?.optString("content").orEmpty()
+                if (t.isNotBlank()) parts += t
+            }
+        }
+        val img = l.optJSONObject("contentImage")
+        return Video(
+            id = id,
+            title = md?.optJSONObject("title")?.optString("content").orEmpty(),
+            channel = parts.firstOrNull { !it.contains("·") }.orEmpty(),
+            meta = "",
+            duration = img?.let { findBadge(it) }.orEmpty(),
+            thumb = pickThumb(img?.let { findArray(it, "sources") }, 640),
+            avatar = null,
+            isPlaylist = true,
+        )
+    }
+
     private fun fromLockup(l: JSONObject): Video? {
+        if (l.optString("contentType") == "LOCKUP_CONTENT_TYPE_PLAYLIST") return lockupPlaylist(l)
         if (l.optString("contentType") != "LOCKUP_CONTENT_TYPE_VIDEO") return null
         val id = l.optString("contentId").ifEmpty { return null }
         if (isLive(l)) return null
