@@ -25,6 +25,7 @@ object ErrorLog {
 
     /** Записать ошибку; where — где произошло, например «Лента: Подписки». */
     fun log(where: String, e: Throwable) {
+        if (e.isOffline()) return // нет интернета — не ошибка приложения
         runCatching { write(where, e) }
     }
 
@@ -54,3 +55,19 @@ object ErrorLog {
             "${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})\n\n" +
             read().ifEmpty { "No errors" }
 }
+
+/** Нет интернета: имя сервера не находится или нет соединения. */
+fun Throwable.isOffline(): Boolean {
+    var t: Throwable? = this
+    while (t != null) {
+        if (t is java.net.UnknownHostException || t is java.net.NoRouteToHostException ||
+            (t is java.net.ConnectException && !Net.online())
+        ) return true
+        t = t.cause
+    }
+    return false
+}
+
+/** Текст ошибки для экрана: без интернета — понятное «Нет подключения». */
+fun android.content.Context.errorText(res: Int, t: Throwable): String =
+    if (t.isOffline() || !Net.online()) getString(R.string.no_connection) else getString(res, t.message)

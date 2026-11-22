@@ -159,7 +159,7 @@ class MusicSectionsAdapter(private val act: MainActivity) : RecyclerView.Adapter
     }
 
     /** Обложка; у встроенных плейлистов — тёмная плитка с белой иконкой. */
-    private fun bindCover(img: ImageView, item: MusicItem, iconPadDp: Int) {
+    private fun bindCover(img: ImageView, item: MusicItem, iconPadDp: Int, sizeDp: Int) {
         val icon = Music.systemIcon(item.id)
         if (icon != 0) {
             img.dispose()
@@ -171,7 +171,9 @@ class MusicSectionsAdapter(private val act: MainActivity) : RecyclerView.Adapter
         }
         img.setPadding(0, 0, 0, 0)
         img.scaleType = ImageView.ScaleType.CENTER_CROP
-        img.load(item.thumb) {
+        // картинку — под размер карточки, откуда бы элемент ни пришёл (исполнители в библиотеке приходят строками со 120 px)
+        val px = (sizeDp * act.resources.displayMetrics.density).toInt()
+        img.load(item.thumb?.let { Music.sized(it, px) }) {
             crossfade(false)
             if (item.type == MusicItem.Type.ARTIST) transformations(CircleCropTransformation())
         }
@@ -232,7 +234,7 @@ class MusicSectionsAdapter(private val act: MainActivity) : RecyclerView.Adapter
     private fun bindRow(v: View, item: MusicItem, section: List<MusicItem>) {
         v.findViewById<TextView>(R.id.mrTitle).text = item.title
         v.findViewById<TextView>(R.id.mrSub).text = item.subtitle
-        bindCover(v.findViewById(R.id.mrThumb), item, 10)
+        bindCover(v.findViewById(R.id.mrThumb), item, 10, 48)
         v.setOnClickListener { MusicNav.open(act, item, section) }
         v.setOnLongClickListener { MusicNav.menu(it, item); true }
         bindLike(v, item)
@@ -248,7 +250,7 @@ class MusicSectionsAdapter(private val act: MainActivity) : RecyclerView.Adapter
             val v = h.itemView
             v.findViewById<TextView>(R.id.mcTitle).text = item.title
             v.findViewById<TextView>(R.id.mcSub).text = item.subtitle
-            bindCover(v.findViewById(R.id.mcThumb), item, 44)
+            bindCover(v.findViewById(R.id.mcThumb), item, 44, 140)
             v.setOnClickListener { MusicNav.open(act, item) }
             v.setOnLongClickListener { MusicNav.menu(it, item); true }
         }
@@ -390,7 +392,7 @@ class MusicTab(private val act: MainActivity, parent: ViewGroup) {
                         message.visibility = View.VISIBLE
                     }
                 }.onFailure {
-                    message.text = act.getString(R.string.channel_error, it.message)
+                    message.text = act.errorText(R.string.channel_error, it)
                     message.visibility = View.VISIBLE
                 }
             }
@@ -444,7 +446,7 @@ class MusicPageView(
                         message.visibility = View.VISIBLE
                     }
                 }.onFailure {
-                    message.text = act.getString(R.string.channel_error, it.message)
+                    message.text = act.errorText(R.string.channel_error, it)
                     message.visibility = View.VISIBLE
                 }
             }

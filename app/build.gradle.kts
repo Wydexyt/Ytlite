@@ -66,7 +66,7 @@ kotlin {
 }
 
 dependencies {
-    val media3 = "1.6.1"
+    val media3 = "1.8.0"
     implementation("androidx.media3:media3-exoplayer:$media3")
     implementation("androidx.media3:media3-exoplayer-dash:$media3")
     implementation("androidx.media3:media3-session:$media3")

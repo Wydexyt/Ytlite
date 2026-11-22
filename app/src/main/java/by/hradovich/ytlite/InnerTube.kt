@@ -278,8 +278,9 @@ object InnerTube {
             likes = tb?.optString("likeCountNotliked")?.trim().orEmpty(),
             replies = tb?.optString("replyCount")?.trim().orEmpty(),
             repliesToken = token,
-            replyParams = surface?.let { find(it, "createCommentReplyEndpoint") }?.optString("createReplyParams")
-                ?.takeIf { it.isNotEmpty() },
+            // параметры ответа лежат то в поверхности комментария, то в панели кнопок, то в самом комментарии
+            replyParams = listOfNotNull(surface, ents[vm.optString("toolbarSurfaceKey")], vm, p)
+                .firstNotNullOfOrNull { o -> findWhere(o) { it.optString("createReplyParams").isNotEmpty() }?.optString("createReplyParams") },
         )
     }
 

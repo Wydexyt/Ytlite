@@ -56,7 +56,7 @@ class ChannelPage(private val act: MainActivity, parent: ViewGroup, private val 
                 }.onFailure {
                     ErrorLog.log("Канал $id", it)
                     videos.submit(emptyList())
-                    message.text = act.getString(R.string.channel_error, it.message)
+                    message.text = act.errorText(R.string.channel_error, it)
                     message.visibility = View.VISIBLE
                 }
             }

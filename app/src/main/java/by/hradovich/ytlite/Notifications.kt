@@ -62,7 +62,7 @@ class NotificationsPage(private val act: MainActivity, parent: ViewGroup) : AppP
                         message.visibility = View.VISIBLE
                     }
                 }.onFailure {
-                    message.text = act.getString(R.string.channel_error, it.message)
+                    message.text = act.errorText(R.string.channel_error, it)
                     message.visibility = View.VISIBLE
                 }
             }

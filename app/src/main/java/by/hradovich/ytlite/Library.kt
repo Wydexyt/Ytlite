@@ -270,7 +270,7 @@ class PlaylistPage(private val act: MainActivity, parent: ViewGroup, private val
                 }.onFailure {
                     ErrorLog.log("Плейлист $id", it)
                     videos.submit(emptyList())
-                    message.text = act.getString(R.string.channel_error, it.message)
+                    message.text = act.errorText(R.string.channel_error, it)
                     message.visibility = View.VISIBLE
                 }
             }

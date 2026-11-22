@@ -185,7 +185,14 @@ class VideoAdapter(
         val pct = Prefs.watchedPercent(v.id).takeIf { it > 0 } ?: v.watched
         h.watched.progress = pct
         h.watched.visibility = if (pct > 0) View.VISIBLE else View.GONE
-        h.thumb.load(v.thumb) { crossfade(false) }
+        h.thumb.load(v.thumb) {
+            crossfade(false)
+            // подписанные ссылки превью (?sqp=…) со временем истекают — запасная, без подписи
+            if (!v.isPlaylist && v.id.length == 11) listener(onError = { _, _ ->
+                val plain = "https://i.ytimg.com/vi/${v.id}/hqdefault.jpg"
+                if (v.thumb != plain) h.thumb.load(plain) { crossfade(false) }
+            })
+        }
         h.avatar.loadAvatar(v.avatar)
         h.avatar.visibility = if (v.avatar == null && v.channel.isEmpty()) View.GONE else View.VISIBLE
         val ch = v.channelId

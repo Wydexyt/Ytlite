@@ -186,6 +186,12 @@ object Prefs {
 }
 
 object Net {
+    /** Есть ли сейчас интернет (по данным системы). */
+    fun online(): Boolean = runCatching {
+        val cm = App.instance.getSystemService(android.net.ConnectivityManager::class.java)
+        cm.getNetworkCapabilities(cm.activeNetwork)?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+    }.getOrDefault(true)
+
     const val UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:140.0) Gecko/20100101 Firefox/140.0"
 
     val http: OkHttpClient = OkHttpClient.Builder()

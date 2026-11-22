@@ -50,6 +50,9 @@ class PlaybackService : MediaSessionService() {
     private lateinit var player: ExoPlayer
     private lateinit var session: MediaSession
     private val resolved = ConcurrentHashMap<String, Resolved>()
+
+    /** Когда получены ссылки (elapsedRealtime): YouTube отзывает их примерно через 6 часов. */
+    private val resolvedAt = ConcurrentHashMap<String, Long>()
     private val main = Handler(Looper.getMainLooper())
     private val rn = AtomicInteger()
 
@@ -212,12 +215,19 @@ class PlaybackService : MediaSessionService() {
      * Сервер видео не отвечает или ссылка протухла: один раз запрашиваем ссылки заново
      * (YouTube часто даёт другой узел) и продолжаем с того же места.
      */
-    private fun retryWithFreshLinks(id: String, error: androidx.media3.common.PlaybackException) {
+    /** true — повтор запущен. */
+    private fun retryWithFreshLinks(id: String, error: androidx.media3.common.PlaybackException): Boolean {
         val code = error.errorCode
         val network = code == androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED ||
             code == androidx.media3.common.PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT ||
             code == androidx.media3.common.PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS
-        if (!network || id in Streams.viaAccount || !retried.add(id)) return
+        if (!network || id in Streams.viaAccount || !retried.add(id)) return false
+        refreshLinks(id)
+        return true
+    }
+
+    /** Получить свежие ссылки и продолжить с той же позиции. */
+    private fun refreshLinks(id: String) {
         val item = player.currentMediaItem ?: return
         val pos = player.currentPosition
         Streams.invalidate(id)
@@ -226,6 +236,7 @@ class PlaybackService : MediaSessionService() {
             main.post {
                 if (player.currentMediaItem?.mediaId != id) return@post
                 resolved[id] = r
+                resolvedAt[id] = android.os.SystemClock.elapsedRealtime()
                 applyQuality(r)
                 player.setMediaItem(item, pos)
                 player.prepare()
@@ -295,6 +306,7 @@ class PlaybackService : MediaSessionService() {
         }
         val r = Streams.get(id)
         resolved[id] = r
+        resolvedAt[id] = android.os.SystemClock.elapsedRealtime()
         return item.buildUpon()
             .setUri("https://www.youtube.com/watch?v=$id")
             .setMediaMetadata(
@@ -476,8 +488,8 @@ class PlaybackService : MediaSessionService() {
 
         override fun onPlayerError(error: androidx.media3.common.PlaybackException) {
             val id = player.currentMediaItem?.mediaId
-            ErrorLog.log("Воспроизведение $id (${error.errorCodeName})", error)
-            if (id != null) retryWithFreshLinks(id, error)
+            // в журнал — только если повтор со свежими ссылками невозможен (или уже не помог)
+            if (id == null || !retryWithFreshLinks(id, error)) ErrorLog.log("Воспроизведение $id (${error.errorCodeName})", error)
         }
 
         override fun onIsPlayingChanged(isPlaying: Boolean) {
@@ -522,6 +534,18 @@ class PlaybackService : MediaSessionService() {
     // ---------- очередь и автовоспроизведение ----------
 
     /** Пока играет текущее — заранее получить ссылки на следующее в очереди, чтобы переключение было мгновенным. */
+    /** Ссылки текущего ролика старше 2 часов (с учётом кэша — до ~5 ч): обновляем и потом играем. true — обновление запущено. */
+    private fun staleLinks(): Boolean {
+        val id = player.currentMediaItem?.mediaId ?: return false
+        if (id in Streams.viaAccount) return false
+        val at = resolvedAt[id] ?: return false
+        if (android.os.SystemClock.elapsedRealtime() - at < 2 * 3600_000L) return false
+        resolvedAt[id] = android.os.SystemClock.elapsedRealtime() // не запускать дважды
+        Streams.invalidate(id)
+        refreshLinks(id)
+        return true
+    }
+
     private fun prefetchNext() {
         Queue.items.firstOrNull()?.let { Streams.prefetch(it.id) }
     }
@@ -686,6 +710,15 @@ class PlaybackService : MediaSessionService() {
         override fun seekToNext() = playNext(fromUser = true)
         override fun seekToNextMediaItem() = playNext(fromUser = true)
         override fun seekToPrevious() = playPrevious()
+
+        /** После многих часов на паузе ссылки протухли — обновить заранее, а не ловить 403 и паузу. */
+        override fun play() {
+            if (!staleLinks()) super.play()
+        }
+
+        override fun setPlayWhenReady(playWhenReady: Boolean) {
+            if (!playWhenReady || !staleLinks()) super.setPlayWhenReady(playWhenReady)
+        }
         override fun seekToPreviousMediaItem() = playPrevious()
     }
 

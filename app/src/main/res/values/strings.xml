@@ -211,6 +211,8 @@
     <string name="update_download_failed">Couldn\'t download — opening in the browser</string>
     <string name="update_allow_install">Allow YT Lite to install apps — this is asked only once</string>
     <string name="load_more_retry">Couldn\'t load more. Retry</string>
+    <string name="reply">Reply</string>
+    <string name="no_connection">No internet connection</string>
     <plurals name="replies">
         <item quantity="one">%1$s reply</item>
         <item quantity="other">%1$s replies</item>

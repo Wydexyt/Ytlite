@@ -205,6 +205,8 @@
     <string name="update_download_failed">Не удалось скачать — открываю в браузере</string>
     <string name="update_allow_install">Разрешите YT Lite устанавливать приложения — это спрашивается один раз</string>
     <string name="load_more_retry">Не удалось загрузить. Повторить</string>
+    <string name="reply">Ответить</string>
+    <string name="no_connection">Нет подключения к интернету</string>
     <plurals name="replies">
         <item quantity="one">%1$s ответ</item>
         <item quantity="few">%1$s ответа</item>

@@ -159,7 +159,7 @@ class Feed(
                     if (it.items.isEmpty()) showMessage(act.getString(R.string.empty))
                 }.onFailure {
                     ErrorLog.log("Лента: $name", it)
-                    showMessage(act.getString(R.string.error_with, it.message))
+                    showMessage(act.errorText(R.string.error_with, it))
                 }
             }
         }

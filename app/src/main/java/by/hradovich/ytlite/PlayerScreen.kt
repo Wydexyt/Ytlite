@@ -894,6 +894,7 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
         repliesAdapter.submit(listOf(c))
         commentList.adapter = repliesAdapter
         updateInput()
+        if (Auth.loggedIn && c.replyParams == null) ErrorLog.log("Ответ на комментарий ${c.id}", IllegalStateException("нет параметров ответа"))
         loadReplies(more = false)
     }
 
@@ -967,6 +968,7 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
             val text: TextView = v.findViewById(R.id.cText)
             val likes: TextView = v.findViewById(R.id.cLikes)
             val replies: TextView = v.findViewById(R.id.cReplies)
+            val reply: TextView = v.findViewById(R.id.cReply)
         }
 
         @SuppressLint("NotifyDataSetChanged")
@@ -1015,6 +1017,16 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
             if (showReplies) {
                 h.replies.text = repliesText(c.replies)
                 h.replies.setOnClickListener { onReplies?.invoke(c) }
+            }
+            // «Ответить» под каждым комментарием верхнего уровня: открывает ветку с полем ввода, даже без ответов
+            val canReply = onReplies != null && Auth.loggedIn && c.replyParams != null
+            h.reply.visibility = if (canReply) View.VISIBLE else View.GONE
+            if (canReply) h.reply.setOnClickListener {
+                onReplies?.invoke(c)
+                input.requestFocus()
+                input.post {
+                    act.getSystemService(InputMethodManager::class.java).showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
+                }
             }
         }
     }
