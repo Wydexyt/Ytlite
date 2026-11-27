@@ -664,7 +664,7 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
             h.share.setOnClickListener { share() }
             // «Сохранить»: «Смотреть позже» и плейлисты с галочками
             h.save.visibility = if (Auth.loggedIn) View.VISIBLE else View.GONE
-            h.save.setOnClickListener { current?.let { d -> Library.saveToPlaylist(act, d.id) } }
+            h.save.setOnClickListener { detailsFor?.let { id -> Library.saveToPlaylist(act, id) } }
 
             val hasComments = d != null && d.commentsToken != null
             h.commentsCard.visibility = if (hasComments) View.VISIBLE else View.GONE
