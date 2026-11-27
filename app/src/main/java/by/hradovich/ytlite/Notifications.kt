@@ -36,7 +36,10 @@ class NotificationsPage(private val act: MainActivity, parent: ViewGroup) : AppP
             }
             v.setOnClickListener {
                 when {
-                    n.videoId != null && n.isComment -> act.openVideoComments(n.videoId, n.params)
+                    n.videoId != null && n.isComment -> {
+                        if (n.commentId == null) ErrorLog.log("Уведомление: нет id комментария", IllegalStateException(n.text))
+                        act.openVideoComments(n.videoId, n.params, n.commentId)
+                    }
                     n.videoId != null -> act.openVideo(n.videoId, null)
                     n.channelId != null -> act.openChannel(n.channelId)
                     else -> android.widget.Toast.makeText(act, R.string.link_unsupported, android.widget.Toast.LENGTH_SHORT).show()

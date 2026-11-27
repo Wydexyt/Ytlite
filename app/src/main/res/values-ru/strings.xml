@@ -207,6 +207,7 @@
     <string name="load_more_retry">Не удалось загрузить. Повторить</string>
     <string name="reply">Ответить</string>
     <string name="no_connection">Нет подключения к интернету</string>
+    <string name="brightness_auto">Авто</string>
     <plurals name="replies">
         <item quantity="one">%1$s ответ</item>
         <item quantity="few">%1$s ответа</item>

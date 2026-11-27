@@ -213,6 +213,7 @@
     <string name="load_more_retry">Couldn\'t load more. Retry</string>
     <string name="reply">Reply</string>
     <string name="no_connection">No internet connection</string>
+    <string name="brightness_auto">Auto</string>
     <plurals name="replies">
         <item quantity="one">%1$s reply</item>
         <item quantity="other">%1$s replies</item>

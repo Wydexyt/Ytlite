@@ -180,6 +180,7 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
     }
 
     fun detach() {
+        resetBrightness()
         controller?.removeListener(playerListener)
         view.player = null
         overlay.player = null
@@ -188,6 +189,7 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
 
     fun setExpanded(e: Boolean) {
         expanded = e
+        if (!e) resetBrightness()
         if (e) bindView() else {
             closeWeb()
             view.player = null
@@ -210,9 +212,10 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
     private var detailsParams: Pair<String, String?>? = null
     private var commentsOnLoad: String? = null
 
-    fun openComments(id: String, params: String?) {
+    fun openComments(id: String, params: String?, commentId: String? = null) {
         detailsParams = id to params
         commentsOnLoad = id
+        threadOnLoad = commentId
         if (detailsFor == id) {
             // это видео уже открыто — перезагрузить страницу с нужной веткой
             detailsFor = null
@@ -405,13 +408,27 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
     // ---------- вертикальные жесты ----------
 
     private var dragStartX = 0f
+    private var dragStartY = 0f
     private var startBrightness = 0f
     private var startVolume = 0
 
+    /** Жест начат в мёртвой зоне (центр экрана или полоса у шторки) — ничего не делаем. */
+    private var dragIgnored = false
+
+    /** Вернуть системную (авто) яркость — при выходе из полноэкранного режима, сворачивании и уходе в фон. */
+    fun resetBrightness() {
+        val w = act.window
+        if (w.attributes.screenBrightness != android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE)
+            w.attributes = w.attributes.apply { screenBrightness = android.view.WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE }
+    }
+
     private val dragHandler = object : DragListener {
-        override fun onDragStart(startXFraction: Float) {
+        override fun onDragStart(startXFraction: Float, startYFraction: Float) {
             dragStartX = startXFraction
-            if (isLandscape) {
+            dragStartY = startYFraction
+            // яркость — левая треть, громкость — правая; середина и верхняя полоса (там шторка) — без жестов
+            dragIgnored = isLandscape && (startXFraction in 0.34f..0.66f || startYFraction < 0.12f)
+            if (isLandscape && !dragIgnored) {
                 val b = act.window.attributes.screenBrightness
                 startBrightness = if (b >= 0) b else
                     Settings.System.getInt(act.contentResolver, Settings.System.SCREEN_BRIGHTNESS, 128) / 255f
@@ -424,12 +441,20 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
                 act.dragPlayer(dy) // свайп вниз — свернуть в мини-плеер
                 return
             }
+            if (dragIgnored) return
             val h = playerBox.height.toFloat().coerceAtLeast(1f)
             val delta = -dy / h * 1.2f
             if (dragStartX < 0.5f) {
-                val b = (startBrightness + delta).coerceIn(0.01f, 1f)
-                act.window.attributes = act.window.attributes.apply { screenBrightness = b }
-                overlay.showInfo("☀  ${(b * 100).toInt()}%")
+                val raw = startBrightness + delta
+                if (raw < 0f) {
+                    // ниже минимума — снова системная автояркость
+                    resetBrightness()
+                    overlay.showInfo("☀  ${act.getString(R.string.brightness_auto)}")
+                } else {
+                    val b = raw.coerceIn(0.01f, 1f)
+                    act.window.attributes = act.window.attributes.apply { screenBrightness = b }
+                    overlay.showInfo("☀  ${(b * 100).toInt()}%")
+                }
             } else {
                 val max = audio.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC)
                 val v = (startVolume + delta * max).toInt().coerceIn(0, max)
@@ -596,6 +621,7 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
             val dislikeBtn: View = v.findViewById(R.id.dislikeBtn)
             val dislikeIcon: ImageView = v.findViewById(R.id.dislikeIcon)
             val share: View = v.findViewById(R.id.shareBtn)
+            val save: View = v.findViewById(R.id.saveBtn)
             val commentsCard: View = v.findViewById(R.id.commentsCard)
             val commentsHeader: TextView = v.findViewById(R.id.commentsHeader)
             val teaserRow: View = v.findViewById(R.id.teaserRow)
@@ -636,6 +662,9 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
             h.likeBtn.setOnClickListener { rate(if (likeStatus == "LIKE") "INDIFFERENT" else "LIKE") }
             h.dislikeBtn.setOnClickListener { rate(if (likeStatus == "DISLIKE") "INDIFFERENT" else "DISLIKE") }
             h.share.setOnClickListener { share() }
+            // «Сохранить»: «Смотреть позже» и плейлисты с галочками
+            h.save.visibility = if (Auth.loggedIn) View.VISIBLE else View.GONE
+            h.save.setOnClickListener { current?.let { d -> Library.saveToPlaylist(act, d.id) } }
 
             val hasComments = d != null && d.commentsToken != null
             h.commentsCard.visibility = if (hasComments) View.VISIBLE else View.GONE
@@ -809,7 +838,14 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
         repliesAdapter.submit(emptyList())
     }
 
+    /** Позиция общего списка — чтобы вернуться из ветки туда же. */
+    private var commentsScroll: android.os.Parcelable? = null
+
+    /** Из уведомления: id комментария, ветку которого открыть после загрузки. */
+    private var threadOnLoad: String? = null
+
     private fun openComments() {
+        val fromReplies = mode == Mode.REPLIES
         mode = Mode.COMMENTS
         panelTitle.text = listOf(act.getString(R.string.comments), current?.commentsCount.orEmpty()).filter { it.isNotBlank() }.joinToString("  ")
         panelBack.visibility = View.GONE
@@ -817,6 +853,7 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
         panelMessage.visibility = View.GONE
         commentList.visibility = View.VISIBLE
         commentList.adapter = commentsAdapter
+        if (fromReplies) commentsScroll?.let { commentList.layoutManager?.onRestoreInstanceState(it) }
         updateSortRow()
         updateInput()
         showPanel()
@@ -875,6 +912,14 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
                         updateInput()
                         if (!more && p.items.isEmpty()) showPanelMessage(act.getString(R.string.no_comments))
                     }
+                    // из уведомления — сразу нужная ветка (YouTube ставит её первой)
+                    threadOnLoad?.let { want ->
+                        threadOnLoad = null
+                        val top = want.substringBefore('.')
+                        val c = p.items.firstOrNull { it.id == top || it.id == want }
+                        if (c != null) openReplies(c)
+                        else ErrorLog.log("Ветка из уведомления $want", IllegalStateException("не найдена среди ${p.items.size} комментариев"))
+                    }
                 }.onFailure {
                     ErrorLog.log("Комментарии", it)
                     if (!more) showPanelMessage(act.getString(R.string.comments_failed))
@@ -884,6 +929,7 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
     }
 
     private fun openReplies(c: Comment) {
+        if (mode == Mode.COMMENTS) commentsScroll = commentList.layoutManager?.onSaveInstanceState()
         mode = Mode.REPLIES
         repliesParent = c
         repliesCont = c.repliesToken
@@ -1018,11 +1064,18 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
                 h.replies.text = repliesText(c.replies)
                 h.replies.setOnClickListener { onReplies?.invoke(c) }
             }
-            // «Ответить» под каждым комментарием верхнего уровня: открывает ветку с полем ввода, даже без ответов
-            val canReply = onReplies != null && Auth.loggedIn && c.replyParams != null
+            // «Ответить»: в общем списке — открыть ветку; в ветке — поле ввода, у ответа с «@имя »
+            val inThread = onReplies == null
+            val canReply = Auth.loggedIn && (if (inThread) repliesParent?.replyParams != null else c.replyParams != null)
             h.reply.visibility = if (canReply) View.VISIBLE else View.GONE
             if (canReply) h.reply.setOnClickListener {
-                onReplies?.invoke(c)
+                if (inThread) {
+                    if (position > 0 && c.author.isNotBlank()) {
+                        val tag = (if (c.author.startsWith("@")) c.author else "@${c.author}") + " "
+                        if (!input.text.startsWith(tag)) input.setText(tag + input.text)
+                        input.setSelection(input.text.length)
+                    }
+                } else onReplies?.invoke(c)
                 input.requestFocus()
                 input.post {
                     act.getSystemService(InputMethodManager::class.java).showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
@@ -1045,6 +1098,7 @@ class PlayerScreen(private val act: MainActivity, val root: View) {
 
     /** Поставить нужную ориентацию. Если она уже такая — ничего не делать (без зацикливания). */
     private fun setLandscape(land: Boolean) {
+        if (!land) resetBrightness()
         if (land == isLandscape) return
         val target = if (land) ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT

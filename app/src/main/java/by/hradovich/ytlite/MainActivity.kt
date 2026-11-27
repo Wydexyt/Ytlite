@@ -361,9 +361,9 @@ class MainActivity : Activity() {
     }
 
     /** Видео сразу с комментариями (уведомление об ответе). */
-    fun openVideoComments(id: String, params: String?) {
+    fun openVideoComments(id: String, params: String?, commentId: String? = null) {
         if (music.visible) music.hide()
-        player.openComments(id, params)
+        player.openComments(id, params, commentId)
         expandPlayer()
     }
 

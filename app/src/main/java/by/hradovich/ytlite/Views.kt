@@ -285,7 +285,7 @@ object Share {
 /** Обработчик вертикального перетаскивания по видео. */
 interface DragListener {
     /** startXFraction: где по горизонтали начался жест (0..1). */
-    fun onDragStart(startXFraction: Float)
+    fun onDragStart(startXFraction: Float, startYFraction: Float)
     fun onDrag(dy: Float)
     fun onDragEnd(dy: Float)
 }
@@ -392,7 +392,7 @@ class TapOverlay(ctx: Context, private val onSingleTap: () -> Unit) : FrameLayou
                     dragging = true
                     removeCallbacks(singleTap)
                     parent?.requestDisallowInterceptTouchEvent(true)
-                    drag?.onDragStart(if (width > 0) downX / width else 0.5f)
+                    drag?.onDragStart(if (width > 0) downX / width else 0.5f, if (height > 0) downY / height else 0.5f)
                 }
                 if (dragging) drag?.onDrag(dy)
             }

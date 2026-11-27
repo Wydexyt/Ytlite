@@ -482,6 +482,7 @@ object InnerTube {
         val read: Boolean,
         val params: String? = null,   // для ответа на комментарий — открыть видео на этой ветке
         val isComment: Boolean = false,
+        val commentId: String? = null, // lc из ссылки: «комментарий» или «комментарий.ответ»
     )
 
     fun notifications(): List<Notification> {
@@ -500,6 +501,9 @@ object InnerTube {
                             ?: Regex("[?&]v=([\\w-]{11})").find(url)?.groupValues?.get(1)
                         val params = nav?.let { find(it, "watchEndpoint") }?.optString("params")?.ifEmpty { null }
                         val isComment = url.contains("lc=") || navText.contains("omment")
+                        val lc = Regex("[?&]lc=([\\w.-]+)").find(url)?.groupValues?.get(1)
+                            ?: Regex("lc=([\\w.-]+)").find(navText)?.groupValues?.get(1)
+                            ?: Regex("\"linkedCommentId\"\\s*:\\s*\"([\\w.-]+)\"").find(navText)?.groupValues?.get(1)
                         val ch = nav?.let { find(it, "browseEndpoint") }?.optString("browseId")?.takeIf { it.startsWith("UC") }
                         if (vid == null && ch == null) ErrorLog.log("Уведомление: ссылка не распознана", IllegalStateException(navText.take(1500)))
                         out += Notification(
@@ -512,6 +516,7 @@ object InnerTube {
                             read = r.optBoolean("read", true),
                             params = params,
                             isComment = isComment,
+                            commentId = lc,
                         )
                         return
                     }
